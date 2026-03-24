@@ -5,7 +5,9 @@ import { mkdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config.js";
 import { scaffold, needsScaffold } from "./scaffold.js";
-import { loadContext } from "./context.js";
+import { loadContext, loadContextFromStdin } from "./context.js";
+import { rlmLoop } from "./rlm.js";
+import { outputResult } from "./output.js";
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
@@ -153,31 +155,28 @@ async function runQuery(opts: CliOptions): Promise<void> {
     }
   }
 
-  // Stub: RLM loop will be implemented in Group 4
-  // For now, output a placeholder indicating the engine is not yet connected
-  const result = {
-    answer: `[rlmx engine not yet connected] Query: "${opts.query}"`,
-    references: [],
-    usage: { inputTokens: 0, outputTokens: 0, llmCalls: 0 },
-    iterations: 0,
-    model: `${config.model.provider}/${config.model.model}`,
-    context: context
-      ? { type: context.type, metadata: context.metadata }
-      : null,
-  };
-
-  switch (opts.output) {
-    case "json":
-      console.log(JSON.stringify(result, null, 2));
-      break;
-    case "stream":
-      console.log(JSON.stringify({ type: "final", ...result }));
-      break;
-    case "text":
-    default:
-      console.log(result.answer);
-      break;
+  // Read query from stdin if not provided as argument
+  let query = opts.query;
+  if (!query && !process.stdin.isTTY) {
+    const stdinCtx = await loadContextFromStdin();
+    query = stdinCtx.content as string;
   }
+
+  if (!query) {
+    console.error("Error: no query provided");
+    process.exit(1);
+  }
+
+  // Run RLM loop
+  const result = await rlmLoop(query, context, config, {
+    maxIterations: opts.maxIterations,
+    timeout: opts.timeout,
+    verbose: opts.verbose,
+    output: opts.output,
+  });
+
+  // Output result
+  outputResult(result, opts.output);
 }
 
 async function main(): Promise<void> {

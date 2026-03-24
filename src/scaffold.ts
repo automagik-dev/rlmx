@@ -116,8 +116,8 @@ const MODEL_MD_DEFAULT = `<!-- MODEL.md — Configure which LLM provider and mod
      Model must match a valid model ID for that provider. -->
 
 provider: anthropic
-model: claude-sonnet-4-5-20250514
-sub-call-model: claude-haiku-4-5-20251001
+model: claude-sonnet-4-5
+sub-call-model: claude-haiku-4-5
 `;
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [

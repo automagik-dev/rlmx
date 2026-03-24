@@ -83,7 +83,7 @@ export function parseToolsMd(content: string): ToolDef[] {
 /**
  * Parse MODEL.md format:
  *   provider: anthropic
- *   model: claude-sonnet-4-5-20250514
+ *   model: claude-sonnet-4-5
  *   sub-call-model: claude-haiku-4-5-20251001
  *
  * Or simple YAML-like key: value pairs. Supports free-form markdown — extracts key-value lines.
@@ -91,7 +91,7 @@ export function parseToolsMd(content: string): ToolDef[] {
 export function parseModelMd(content: string): ModelConfig {
   const config: ModelConfig = {
     provider: "anthropic",
-    model: "claude-sonnet-4-5-20250514",
+    model: "claude-sonnet-4-5",
   };
 
   const lines = content.split("\n");
@@ -137,7 +137,7 @@ export async function loadConfig(dir: string): Promise<RlmxConfig> {
   const tools = toolsRaw ? parseToolsMd(toolsRaw) : [];
   const model = modelRaw
     ? parseModelMd(modelRaw)
-    : { provider: "anthropic", model: "claude-sonnet-4-5-20250514" };
+    : { provider: "anthropic", model: "claude-sonnet-4-5" };
 
   return {
     system,
