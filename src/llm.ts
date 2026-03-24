@@ -1,0 +1,311 @@
+/**
+ * LLM client wrapper using pi/ai.
+ *
+ * Provides completeSimple wrapper, batched calls, IPC request handling
+ * from the Python REPL, and rlm_query child process spawning.
+ */
+
+import { completeSimple, getModel } from "@mariozechner/pi-ai";
+import type { Message, UserMessage, AssistantMessage as PiAssistantMessage } from "@mariozechner/pi-ai";
+import { spawn } from "node:child_process";
+import type { RlmxConfig, ModelConfig } from "./config.js";
+import type { LLMRequest } from "./ipc.js";
+
+/** Token usage tracking. */
+export interface UsageStats {
+  inputTokens: number;
+  outputTokens: number;
+  llmCalls: number;
+}
+
+/** Create a fresh usage tracker. */
+export function createUsage(): UsageStats {
+  return { inputTokens: 0, outputTokens: 0, llmCalls: 0 };
+}
+
+/** Merge child usage into parent. */
+export function mergeUsage(parent: UsageStats, child: UsageStats): void {
+  parent.inputTokens += child.inputTokens;
+  parent.outputTokens += child.outputTokens;
+  parent.llmCalls += child.llmCalls;
+}
+
+/** Message format for the RLM loop. */
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+  /** Original pi/ai AssistantMessage — stored for multi-turn fidelity. */
+  piMessage?: PiAssistantMessage;
+}
+
+/** Response from a single LLM call. */
+export interface LLMResponse {
+  text: string;
+  usage: UsageStats;
+  /** Original pi/ai AssistantMessage for multi-turn conversation fidelity. */
+  piMessage?: PiAssistantMessage;
+}
+
+/**
+ * Resolve a pi/ai model, trying the exact ID first, then stripping the date suffix.
+ */
+function resolveModel(provider: string, modelId: string) {
+  let model = getModel(provider as any, modelId);
+  if (!model) {
+    // Try stripping date suffix (e.g., "claude-sonnet-4-5-20250514" -> "claude-sonnet-4-5")
+    const stripped = modelId.replace(/-\d{8}$/, "");
+    if (stripped !== modelId) {
+      model = getModel(provider as any, stripped);
+    }
+  }
+  if (!model) {
+    throw new Error(
+      `Unknown model "${modelId}" for provider "${provider}". ` +
+        `Try updating MODEL.md or check pi/ai supported models.`
+    );
+  }
+  return model;
+}
+
+/**
+ * Call pi/ai completeSimple with messages.
+ */
+export async function llmComplete(
+  messages: ChatMessage[],
+  modelConfig: ModelConfig,
+  options?: { maxTokens?: number; signal?: AbortSignal }
+): Promise<LLMResponse> {
+  const model = resolveModel(modelConfig.provider, modelConfig.model);
+
+  const systemPrompt = messages.find((m) => m.role === "system")?.content;
+  const piMessages: Message[] = messages
+    .filter((m) => m.role !== "system")
+    .map((m) => {
+      if (m.role === "user") {
+        return {
+          role: "user" as const,
+          content: m.content,
+          timestamp: Date.now(),
+        } satisfies UserMessage;
+      }
+      // For assistant messages from our history, we store full PiAssistantMessage
+      // objects. If we have a raw ChatMessage (string content), wrap minimally.
+      if (m.piMessage) {
+        return m.piMessage as PiAssistantMessage;
+      }
+      // Fallback: construct a minimal assistant message for the API.
+      // This happens when we synthesize assistant messages (e.g., forced final).
+      return {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: m.content }],
+        api: "anthropic-messages",
+        provider: modelConfig.provider,
+        model: modelConfig.model,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      } satisfies PiAssistantMessage;
+    });
+
+  const response = await completeSimple(
+    model,
+    {
+      systemPrompt,
+      messages: piMessages,
+    },
+    {
+      maxTokens: options?.maxTokens ?? 16384,
+      signal: options?.signal,
+    }
+  );
+
+  const text = response.content
+    .filter((block: any) => block.type === "text")
+    .map((block: any) => block.text)
+    .join("");
+
+  return {
+    text,
+    usage: {
+      inputTokens: response.usage?.input ?? 0,
+      outputTokens: response.usage?.output ?? 0,
+      llmCalls: 1,
+    },
+    piMessage: response,
+  };
+}
+
+/**
+ * Call pi/ai completeSimple for a single prompt (no conversation history).
+ * Used for llm_query() sub-calls from the REPL.
+ */
+export async function llmCompleteSimple(
+  prompt: string,
+  modelConfig: ModelConfig,
+  signal?: AbortSignal
+): Promise<LLMResponse> {
+  return llmComplete(
+    [{ role: "user", content: prompt }],
+    modelConfig,
+    { signal }
+  );
+}
+
+/**
+ * Run multiple llm_query calls concurrently.
+ */
+export async function llmCompleteBatched(
+  prompts: string[],
+  modelConfig: ModelConfig,
+  signal?: AbortSignal
+): Promise<{ results: string[]; usage: UsageStats }> {
+  const responses = await Promise.all(
+    prompts.map((p) => llmCompleteSimple(p, modelConfig, signal))
+  );
+
+  const usage = createUsage();
+  const results = responses.map((r) => {
+    mergeUsage(usage, r.usage);
+    return r.text;
+  });
+
+  return { results, usage };
+}
+
+/**
+ * Spawn a child rlmx process for rlm_query() recursive sub-calls.
+ * The child inherits the parent's cwd (and thus .md configs).
+ */
+export async function rlmQuery(
+  prompt: string,
+  cwd: string,
+  signal?: AbortSignal
+): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [process.argv[1], prompt, "--output", "json"],
+      {
+        cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: process.env,
+      }
+    );
+
+    if (signal) {
+      signal.addEventListener("abort", () => child.kill("SIGTERM"), {
+        once: true,
+      });
+    }
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve(`Error: child rlmx exited with code ${code}. ${stderr}`.trim());
+        return;
+      }
+      try {
+        const result = JSON.parse(stdout);
+        resolve(result.answer ?? stdout);
+      } catch {
+        resolve(stdout.trim() || `Error: empty response from child rlmx`);
+      }
+    });
+
+    child.on("error", (err) => {
+      resolve(`Error: failed to spawn child rlmx: ${err.message}`);
+    });
+  });
+}
+
+/**
+ * Run multiple rlm_query calls concurrently (max 4).
+ */
+export async function rlmQueryBatched(
+  prompts: string[],
+  cwd: string,
+  signal?: AbortSignal
+): Promise<string[]> {
+  const MAX_CONCURRENT = 4;
+  const results: string[] = new Array(prompts.length);
+
+  for (let i = 0; i < prompts.length; i += MAX_CONCURRENT) {
+    const batch = prompts.slice(i, i + MAX_CONCURRENT);
+    const batchResults = await Promise.all(
+      batch.map((p) => rlmQuery(p, cwd, signal))
+    );
+    for (let j = 0; j < batchResults.length; j++) {
+      results[i + j] = batchResults[j];
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Handle an LLM IPC request from the Python REPL.
+ * Routes to the appropriate handler based on request_type.
+ */
+export async function handleLLMRequest(
+  request: LLMRequest,
+  config: RlmxConfig,
+  usage: UsageStats,
+  signal?: AbortSignal
+): Promise<string[]> {
+  const subCallModel: ModelConfig = config.model.subCallModel
+    ? { ...config.model, model: config.model.subCallModel }
+    : config.model;
+
+  switch (request.request_type) {
+    case "llm_query": {
+      const resp = await llmCompleteSimple(
+        request.prompts[0],
+        request.model ? { ...subCallModel, model: request.model } : subCallModel,
+        signal
+      );
+      mergeUsage(usage, resp.usage);
+      return [resp.text];
+    }
+
+    case "llm_query_batched": {
+      const modelCfg = request.model
+        ? { ...subCallModel, model: request.model }
+        : subCallModel;
+      const resp = await llmCompleteBatched(request.prompts, modelCfg, signal);
+      mergeUsage(usage, resp.usage);
+      return resp.results;
+    }
+
+    case "rlm_query": {
+      const result = await rlmQuery(
+        request.prompts[0],
+        config.configDir,
+        signal
+      );
+      return [result];
+    }
+
+    case "rlm_query_batched": {
+      const results = await rlmQueryBatched(
+        request.prompts,
+        config.configDir,
+        signal
+      );
+      return results;
+    }
+
+    default:
+      return request.prompts.map(
+        () => `Error: unknown request type "${request.request_type}"`
+      );
+  }
+}
