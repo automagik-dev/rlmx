@@ -235,13 +235,14 @@ export async function rlmLoop(
       if (finalSignal && codeBlocks.length === 0) {
         // FINAL without code blocks — direct answer
         clearTimeout(timeoutHandle);
-        await repl.stop();
 
         if (finalSignal.type === "final") {
+          await repl.stop();
           return buildResult(finalSignal.value, usage, iteration + 1, config);
         }
-        // FINAL_VAR without code — try to get the variable value
+        // FINAL_VAR without code — get variable value before stopping REPL
         const varResult = await getVariableFromRepl(repl, finalSignal.value);
+        await repl.stop();
         return buildResult(
           varResult ?? finalSignal.value,
           usage,

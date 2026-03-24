@@ -4,13 +4,13 @@
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "bin": {
-    "rlmx": "./dist/cli.js"
+    "rlmx": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "python"
+    "python/*.py"
   ],
   "scripts": {
     "build": "tsc",
@@ -38,6 +38,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/automagik/rlmx"
+    "url": "git+https://github.com/automagik/rlmx.git"
   }
 }
