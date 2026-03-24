@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.js.map
+*.d.ts.map
+.env
+.env.*
+
+# Scaffolded config files (user-generated, not part of the package)
+/SYSTEM.md
+/CONTEXT.md
+/TOOLS.md
+/CRITERIA.md
+/MODEL.md
+python/__pycache__/

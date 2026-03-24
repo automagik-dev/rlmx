@@ -1,1 +1,184 @@
-# rlmx\n\nRLM Research CLI for Coding Agents
+# rlmx
+
+RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation.
+
+Based on the [RLM paper](https://arxiv.org/abs/2501.12599) (REPL-based LLM Method). Uses [pi/ai](https://github.com/nickarora/pi-ai) as the multi-provider LLM client.
+
+## Install
+
+```bash
+npm install -g rlmx
+```
+
+## Quick Start
+
+```bash
+# Scaffold config files in current directory
+rlmx init
+
+# Run a query
+rlmx "What is the meaning of life?"
+
+# Query with context (directory of docs)
+rlmx "How does IPC work?" --context ./docs/
+
+# Query with a single file as context
+rlmx "Summarize this paper" --context paper.md --output json
+
+# Pipe data in
+cat data.csv | rlmx "Analyze this dataset"
+```
+
+## How It Works
+
+rlmx implements the RLM (REPL-LM) algorithm:
+
+1. **Prompt externalization** — Your context (files, directories) is loaded into a Python REPL as the `context` variable. Only metadata (type, size, chunk lengths) appears in the LLM message history. The LLM never sees the raw context in its messages.
+
+2. **Iterative REPL loop** — The LLM writes Python code in ` ```repl``` ` blocks. rlmx executes each block in a persistent Python subprocess, feeds results back, and the LLM iterates until it calls `FINAL()` or `FINAL_VAR()`.
+
+3. **Recursive sub-calls** — Inside REPL code, the LLM can call:
+   - `llm_query(prompt)` — single LLM completion (fast, one-shot)
+   - `llm_query_batched(prompts)` — concurrent LLM calls
+   - `rlm_query(prompt)` — spawn a child RLM session (full iterative loop)
+   - `rlm_query_batched(prompts)` — parallel child RLM sessions
+
+4. **Termination** — The loop ends when the LLM calls `FINAL("answer")` or `FINAL_VAR("variable_name")`, or when max iterations (default 30) is reached.
+
+## Config Files
+
+Drop `.md` files in your working directory to customize behavior. Run `rlmx init` to scaffold defaults with inline comments.
+
+| File | Purpose |
+|------|---------|
+| `SYSTEM.md` | System prompt sent to the LLM. Default: exact RLM paper prompt. |
+| `CONTEXT.md` | Context loading documentation (informational). |
+| `TOOLS.md` | Custom Python functions injected into the REPL namespace. |
+| `CRITERIA.md` | Output format criteria appended to the system prompt. |
+| `MODEL.md` | LLM provider and model selection. |
+
+### TOOLS.md Format
+
+Define custom REPL tools as `## heading` + `python` code block:
+
+```markdown
+## search_docs
+` ``python
+def search_docs(keyword):
+    """Search context for files matching keyword."""
+    matches = [item for item in context if keyword.lower() in item['content'].lower()]
+    return [m['path'] for m in matches]
+` ``
+
+## summarize_chunk
+` ``python
+def summarize_chunk(text, max_words=100):
+    """Summarize a chunk of text."""
+    return llm_query(f"Summarize in {max_words} words:\n{text}")
+` ``
+```
+
+### MODEL.md Format
+
+```markdown
+provider: anthropic
+model: claude-sonnet-4-5
+sub-call-model: claude-haiku-4-5
+```
+
+Supports any provider available in [pi/ai](https://github.com/nickarora/pi-ai): `anthropic`, `openai`, `google`, etc.
+
+## CLI Reference
+
+```
+rlmx "query" [options]          Run an RLM query
+rlmx init [--dir <path>]       Scaffold .md config files
+
+Options:
+  --context <path>        Path to context (directory or file)
+  --output <mode>         Output mode: text (default), json, stream
+  --verbose               Show iteration progress on stderr
+  --max-iterations <n>    Maximum RLM iterations (default: 30)
+  --timeout <ms>          Timeout in milliseconds (default: 300000)
+  --dir <path>            Directory for init command (default: cwd)
+  --help, -h              Show this help message
+  --version, -v           Show version
+```
+
+## Output Modes
+
+### Text (default)
+
+Prints the final answer to stdout.
+
+### JSON
+
+```bash
+rlmx "query" --output json
+```
+
+Returns:
+
+```json
+{
+  "answer": "The answer to your query...",
+  "references": ["docs/start/create-project.md", "docs/concept/inter-process-communication.md"],
+  "usage": { "inputTokens": 12500, "outputTokens": 3200, "llmCalls": 5 },
+  "iterations": 3,
+  "model": "anthropic/claude-sonnet-4-5"
+}
+```
+
+### Stream
+
+```bash
+rlmx "query" --output stream
+```
+
+Emits JSONL events per iteration, then a final event.
+
+## Context Loading
+
+| Input | Behavior |
+|-------|----------|
+| `--context dir/` | Recursively reads `*.md` files as `list[{path, content}]` |
+| `--context file.md` | Reads as single string |
+| `--context file.json` | Parses JSON as dict or list |
+| stdin pipe | Reads as single string |
+
+## Environment Variables
+
+rlmx uses pi/ai for LLM calls. Set the appropriate API key for your provider:
+
+- `ANTHROPIC_API_KEY` — for Anthropic models
+- `OPENAI_API_KEY` — for OpenAI models
+- `GOOGLE_API_KEY` — for Google models
+
+## Programmatic API
+
+```typescript
+import { rlmLoop, loadConfig, loadContext } from "rlmx";
+
+const config = await loadConfig("./");
+const context = await loadContext("./docs/");
+
+const result = await rlmLoop("How does IPC work?", context, config, {
+  maxIterations: 10,
+  timeout: 60000,
+  verbose: false,
+  output: "json",
+});
+
+console.log(result.answer);
+console.log(result.references);
+```
+
+## Requirements
+
+- Node.js >= 18
+- Python 3.10+ (for the REPL subprocess)
+- An LLM API key (Anthropic, OpenAI, Google, etc.)
+
+## License
+
+MIT
