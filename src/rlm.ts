@@ -27,6 +27,7 @@ import {
   type ExecutionResult,
 } from "./parser.js";
 import { emitStreamEvent, logVerbose, type RLMResult } from "./output.js";
+import { BudgetTracker } from "./budget.js";
 
 /** Options for the RLM loop. */
 export interface RLMOptions {
@@ -154,6 +155,7 @@ export async function rlmLoop(
 ): Promise<RLMResult> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const usage = createUsage();
+  const budget = new BudgetTracker(config.budget);
 
   // Build system prompt
   const systemPrompt = buildSystemPrompt(config, context);
@@ -207,6 +209,12 @@ export async function rlmLoop(
         break;
       }
 
+      // Check budget
+      if (budget.isExceeded()) {
+        if (opts.verbose) logVerbose(iteration, `budget exceeded: ${budget.getState().budgetHit}`);
+        break;
+      }
+
       if (opts.verbose) {
         logVerbose(iteration, "calling LLM...");
       }
@@ -216,6 +224,7 @@ export async function rlmLoop(
         signal: abortController.signal,
       });
       mergeUsage(usage, response.usage);
+      budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
 
       const responseText = response.text;
 
@@ -238,7 +247,7 @@ export async function rlmLoop(
 
         if (finalSignal.type === "final") {
           await repl.stop();
-          return buildResult(finalSignal.value, usage, iteration + 1, config);
+          return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit);
         }
         // FINAL_VAR without code — get variable value before stopping REPL
         const varResult = await getVariableFromRepl(repl, finalSignal.value);
@@ -247,7 +256,8 @@ export async function rlmLoop(
           varResult ?? finalSignal.value,
           usage,
           iteration + 1,
-          config
+          config,
+          budget.getState().budgetHit
         );
       }
 
@@ -278,7 +288,8 @@ export async function rlmLoop(
             execResult.final.value,
             usage,
             iteration + 1,
-            config
+            config,
+            budget.getState().budgetHit
           );
         }
       }
@@ -296,7 +307,8 @@ export async function rlmLoop(
             varExec.final.value,
             usage,
             iteration + 1,
-            config
+            config,
+            budget.getState().budgetHit
           );
         }
         // Try getting variable directly
@@ -310,7 +322,8 @@ export async function rlmLoop(
             getResult.final.value,
             usage,
             iteration + 1,
-            config
+            config,
+            budget.getState().budgetHit
           );
         }
       }
@@ -319,7 +332,7 @@ export async function rlmLoop(
       if (finalSignal && finalSignal.type === "final") {
         clearTimeout(timeoutHandle);
         await repl.stop();
-        return buildResult(finalSignal.value, usage, iteration + 1, config);
+        return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit);
       }
 
       // Format execution results and append to history
@@ -377,7 +390,8 @@ export async function rlmLoop(
       forcedResult,
       usage,
       opts.maxIterations,
-      config
+      config,
+      budget.getState().budgetHit
     );
   } catch (err: any) {
     clearTimeout(timeoutHandle);
@@ -388,7 +402,8 @@ export async function rlmLoop(
         "Error: RLM query timed out",
         usage,
         0,
-        config
+        config,
+        budget.getState().budgetHit
       );
     }
 
@@ -442,7 +457,8 @@ function buildResult(
   answer: string,
   usage: UsageStats,
   iterations: number,
-  config: RlmxConfig
+  config: RlmxConfig,
+  budgetHit?: string | null
 ): RLMResult {
   // Extract file references from the answer (paths like docs/foo/bar.md)
   const refRegex = /(?:^|[\s(["'])([a-zA-Z0-9_./-]+\.(?:md|txt|py|ts|js|json))/gm;
@@ -462,5 +478,6 @@ function buildResult(
     usage,
     iterations,
     model: `${config.model.provider}/${config.model.model}`,
+    budgetHit: budgetHit ?? null,
   };
 }

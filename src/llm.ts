@@ -10,23 +10,26 @@ import type { Message, UserMessage, AssistantMessage as PiAssistantMessage } fro
 import { spawn } from "node:child_process";
 import type { RlmxConfig, ModelConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
+import type { Logger } from "./logger.js";
 
 /** Token usage tracking. */
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
+  totalCost: number;
   llmCalls: number;
 }
 
 /** Create a fresh usage tracker. */
 export function createUsage(): UsageStats {
-  return { inputTokens: 0, outputTokens: 0, llmCalls: 0 };
+  return { inputTokens: 0, outputTokens: 0, totalCost: 0, llmCalls: 0 };
 }
 
 /** Merge child usage into parent. */
 export function mergeUsage(parent: UsageStats, child: UsageStats): void {
   parent.inputTokens += child.inputTokens;
   parent.outputTokens += child.outputTokens;
+  parent.totalCost += child.totalCost;
   parent.llmCalls += child.llmCalls;
 }
 
@@ -69,13 +72,15 @@ function resolveModel(provider: string, modelId: string) {
 
 /**
  * Call pi/ai completeSimple with messages.
+ * Tracks cost and time_ms per call. Optionally emits to a Logger.
  */
 export async function llmComplete(
   messages: ChatMessage[],
   modelConfig: ModelConfig,
-  options?: { maxTokens?: number; signal?: AbortSignal }
+  options?: { maxTokens?: number; signal?: AbortSignal; logger?: Logger; iteration?: number }
 ): Promise<LLMResponse> {
   const model = resolveModel(modelConfig.provider, modelConfig.model);
+  const startTime = Date.now();
 
   const systemPrompt = messages.find((m) => m.role === "system")?.content;
   const piMessages: Message[] = messages
@@ -119,16 +124,33 @@ export async function llmComplete(
     }
   );
 
+  const timeMs = Date.now() - startTime;
+  const inputTokens = response.usage?.input ?? 0;
+  const outputTokens = response.usage?.output ?? 0;
+  const cost = (response.usage as any)?.cost?.total ?? 0;
+
   const text = response.content
     .filter((block: any) => block.type === "text")
     .map((block: any) => block.text)
     .join("");
 
+  // Emit to logger if provided
+  if (options?.logger) {
+    options.logger.llmCall({
+      iteration: options.iteration ?? -1,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cost,
+      time_ms: timeMs,
+    });
+  }
+
   return {
     text,
     usage: {
-      inputTokens: response.usage?.input ?? 0,
-      outputTokens: response.usage?.output ?? 0,
+      inputTokens,
+      outputTokens,
+      totalCost: cost,
       llmCalls: 1,
     },
     piMessage: response,

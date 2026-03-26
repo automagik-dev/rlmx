@@ -3,17 +3,19 @@
 import { resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { loadConfig } from "./config.js";
+import { loadConfig, type ToolsLevel } from "./config.js";
 import { scaffold, needsScaffold } from "./scaffold.js";
 import { loadContext, loadContextFromStdin } from "./context.js";
 import { rlmLoop } from "./rlm.js";
-import { outputResult } from "./output.js";
+import { outputResult, buildStats, emitStats } from "./output.js";
+import { createLogger } from "./logger.js";
+import { checkPythonVersion } from "./detect.js";
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
 Usage:
   rlmx "query" [options]          Run an RLM query
-  rlmx init [--dir <path>]       Scaffold .md config files
+  rlmx init [--dir <path>]       Scaffold rlmx.yaml config
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -25,18 +27,25 @@ Options:
   --help, -h              Show this help message
   --version, -v           Show version
 
-Config Files (.md in cwd):
-  SYSTEM.md     System prompt (default: RLM paper prompt)
-  CONTEXT.md    Context loading config
-  TOOLS.md      Custom Python REPL tools
-  CRITERIA.md   Output format criteria
-  MODEL.md      LLM provider and model selection
+  --stats                 Emit JSON stats to stderr (or include in --output json)
+  --log <path>            Write structured JSONL log to file
+  --tools <level>         Tool level: core (default), standard, full
+  --max-cost <n>          Maximum USD spend per run
+  --max-tokens <n>        Maximum total tokens per run
+  --max-depth <n>         Maximum recursive rlm_query depth
+  --ext <list>            File extensions for context dirs (comma-separated)
+
+Config:
+  rlmx.yaml               Single config file (run "rlmx init" to create)
+  Fallback: SYSTEM.md, TOOLS.md, CRITERIA.md, MODEL.md (v0.1 compat)
 
 Examples:
   rlmx "How does IPC work?" --context ./docs/
-  rlmx "Summarize this" --context paper.md --output json
+  rlmx "Summarize this" --context paper.md --output json --stats
+  rlmx "Analyze code" --context ./src/ --tools full --ext .ts,.js
+  rlmx "Quick question" --max-cost 0.10 --max-tokens 5000
   rlmx init --dir ./my-project
-  echo "data" | rlmx "Analyze this"
+  echo "data" | rlmx "Analyze this" --log run.jsonl
 `;
 
 interface CliOptions {
@@ -48,6 +57,13 @@ interface CliOptions {
   maxIterations: number;
   timeout: number;
   dir: string;
+  stats: boolean;
+  log: string | null;
+  tools: ToolsLevel | null;
+  maxCost: number | null;
+  maxTokens: number | null;
+  maxDepth: number | null;
+  ext: string[] | null;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -62,6 +78,13 @@ function parseCliArgs(args: string[]): CliOptions {
       dir: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", short: "v", default: false },
+      stats: { type: "boolean", default: false },
+      log: { type: "string" },
+      tools: { type: "string" },
+      "max-cost": { type: "string" },
+      "max-tokens": { type: "string" },
+      "max-depth": { type: "string" },
+      ext: { type: "string" },
     },
     allowPositionals: true,
     strict: false,
@@ -69,27 +92,19 @@ function parseCliArgs(args: string[]): CliOptions {
 
   if (values.help) {
     return {
-      query: null,
-      command: "help",
-      context: null,
-      output: "text",
-      verbose: false,
-      maxIterations: 30,
-      timeout: 300000,
-      dir: process.cwd(),
+      query: null, command: "help", context: null, output: "text",
+      verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
+      stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
+      maxDepth: null, ext: null,
     };
   }
 
   if (values.version) {
     return {
-      query: null,
-      command: "version",
-      context: null,
-      output: "text",
-      verbose: false,
-      maxIterations: 30,
-      timeout: 300000,
-      dir: process.cwd(),
+      query: null, command: "version", context: null, output: "text",
+      verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
+      stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
+      maxDepth: null, ext: null,
     };
   }
 
@@ -103,6 +118,19 @@ function parseCliArgs(args: string[]): CliOptions {
     process.exit(1);
   }
 
+  // Validate --tools
+  const toolsRaw = values.tools as string | undefined;
+  if (toolsRaw && !["core", "standard", "full"].includes(toolsRaw)) {
+    console.error(`Error: --tools must be core, standard, or full (got "${toolsRaw}")`);
+    process.exit(1);
+  }
+
+  // Parse --ext
+  const extRaw = values.ext as string | undefined;
+  const ext = extRaw
+    ? extRaw.split(",").map((e) => (e.startsWith(".") ? e : `.${e}`))
+    : null;
+
   return {
     query,
     command,
@@ -112,6 +140,13 @@ function parseCliArgs(args: string[]): CliOptions {
     maxIterations: parseInt(values["max-iterations"] as string, 10) || 30,
     timeout: parseInt(values.timeout as string, 10) || 300000,
     dir: resolve(dir),
+    stats: values.stats as boolean,
+    log: (values.log as string) || null,
+    tools: (toolsRaw as ToolsLevel) || null,
+    maxCost: values["max-cost"] ? parseFloat(values["max-cost"] as string) : null,
+    maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"] as string, 10) : null,
+    maxDepth: values["max-depth"] ? parseInt(values["max-depth"] as string, 10) : null,
+    ext,
   };
 }
 
@@ -119,17 +154,30 @@ async function runInit(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   const created = await scaffold(dir);
   if (created.length === 0) {
-    console.log("All config files already exist in", dir);
+    console.log("Config already exists in", dir);
   } else {
-    console.log(`Scaffolded ${created.length} config file(s) in ${dir}:`);
-    for (const name of created) {
-      console.log(`  ${name}`);
-    }
+    console.log(`Created ${created.join(", ")} in ${dir}`);
   }
 }
 
 async function runQuery(opts: CliOptions): Promise<void> {
   const configDir = process.cwd();
+  const startTime = Date.now();
+
+  // Check Python version at startup
+  try {
+    const pyVersion = await checkPythonVersion();
+    if (!pyVersion.valid) {
+      console.error(
+        `Error: rlmx requires Python 3.10+, found ${pyVersion.version}.\n` +
+        `Please upgrade Python and try again.`
+      );
+      process.exit(1);
+    }
+  } catch (err: any) {
+    console.error(err.message);
+    process.exit(1);
+  }
 
   // Auto-scaffold on first run
   if (await needsScaffold(configDir)) {
@@ -145,11 +193,35 @@ async function runQuery(opts: CliOptions): Promise<void> {
   // Load config
   const config = await loadConfig(configDir);
 
-  // Load context if provided
+  // Apply CLI overrides to config
+  if (opts.tools) {
+    config.toolsLevel = opts.tools;
+  }
+  if (opts.maxCost !== null) {
+    config.budget.maxCost = opts.maxCost;
+  }
+  if (opts.maxTokens !== null) {
+    config.budget.maxTokens = opts.maxTokens;
+  }
+  if (opts.maxDepth !== null) {
+    config.budget.maxDepth = opts.maxDepth;
+  }
+
+  // Set up logger
+  const logger = createLogger(opts.log ?? undefined);
+  logger.runStart({
+    query: opts.query ?? "(stdin)",
+    model: `${config.model.provider}/${config.model.model}`,
+    tools_level: config.toolsLevel,
+    context_type: opts.context ? "path" : "none",
+  });
+
+  // Load context if provided, with extension overrides
   let context = null;
   if (opts.context) {
     const contextPath = resolve(opts.context);
-    context = await loadContext(contextPath);
+    const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+    context = await loadContext(contextPath, contextOpts);
     if (opts.verbose) {
       console.error(`rlmx: loaded context — ${context.metadata}`);
     }
@@ -175,8 +247,37 @@ async function runQuery(opts: CliOptions): Promise<void> {
     output: opts.output,
   });
 
-  // Output result
-  outputResult(result, opts.output);
+  const timeMs = Date.now() - startTime;
+
+  // Log run end
+  logger.runEnd({
+    iterations: result.iterations,
+    total_tokens: result.usage.inputTokens + result.usage.outputTokens,
+    total_cost: result.usage.totalCost,
+    time_ms: timeMs,
+    budget_hit: result.budgetHit ?? null,
+    answer_length: result.answer.length,
+  });
+  logger.close();
+
+  // Build stats if requested
+  if (opts.stats) {
+    const stats = buildStats(result, {
+      time_ms: timeMs,
+      tools_level: config.toolsLevel,
+      budget_hit: result.budgetHit,
+      run_id: logger.runId,
+    });
+    // For JSON output, stats are included in the response
+    if (opts.output === "json") {
+      outputResult(result, opts.output, stats);
+    } else {
+      outputResult(result, opts.output);
+      emitStats(stats);
+    }
+  } else {
+    outputResult(result, opts.output);
+  }
 }
 
 async function main(): Promise<void> {
@@ -190,7 +291,8 @@ async function main(): Promise<void> {
     case "version": {
       const { createRequire } = await import("node:module");
       const require = createRequire(import.meta.url);
-      const pkg = require("../package.json");
+      // dist/src/cli.js → ../../package.json
+      const pkg = require("../../package.json");
       console.log(`rlmx v${pkg.version}`);
       break;
     }
