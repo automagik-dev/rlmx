@@ -2,9 +2,9 @@
 # Use: rlmx "How does the RLM loop work?" --context ./src/ ./python/
 
 model:
-  provider: anthropic
-  model: claude-sonnet-4-5
-  sub-call-model: claude-haiku-4-5
+  provider: google
+  model: gemini-2.5-flash
+  sub-call-model: gemini-2.5-flash
 
 system: |
   You are navigating the rlmx codebase — an npm CLI that implements
