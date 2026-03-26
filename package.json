@@ -18,9 +18,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.62.0"
+    "@mariozechner/pi-ai": "^0.62.0",
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   },

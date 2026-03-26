@@ -119,12 +119,9 @@ async function runInit(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   const created = await scaffold(dir);
   if (created.length === 0) {
-    console.log("All config files already exist in", dir);
+    console.log("Config already exists in", dir);
   } else {
-    console.log(`Scaffolded ${created.length} config file(s) in ${dir}:`);
-    for (const name of created) {
-      console.log(`  ${name}`);
-    }
+    console.log(`Created ${created.join(", ")} in ${dir}`);
   }
 }
 
