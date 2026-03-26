@@ -1,5 +1,5 @@
-export { loadConfig, parseToolsMd, parseModelMd } from "./config.js";
-export type { RlmxConfig, ToolDef, ModelConfig } from "./config.js";
+export { loadConfig, hasConfig, parseToolsMd, parseModelMd } from "./config.js";
+export type { RlmxConfig, ToolDef, ModelConfig, BudgetConfig, ContextConfig, ToolsLevel } from "./config.js";
 
 export { scaffold, needsScaffold, SCAFFOLD_FILE_NAMES } from "./scaffold.js";
 
@@ -29,5 +29,8 @@ export {
 } from "./parser.js";
 export type { CodeBlock, FinalSignal, ExecutionResult } from "./parser.js";
 
-export { outputResult, emitStreamEvent, logVerbose } from "./output.js";
-export type { RLMResult, StreamEvent } from "./output.js";
+export { outputResult, emitStreamEvent, emitStats, buildStats, logVerbose } from "./output.js";
+export type { RLMResult, StreamEvent, StatsData } from "./output.js";
+
+export { Logger, createLogger } from "./logger.js";
+export type { EventType, LogEvent } from "./logger.js";
