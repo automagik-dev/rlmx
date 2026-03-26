@@ -16,19 +16,23 @@ import type { Logger } from "./logger.js";
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   totalCost: number;
   llmCalls: number;
 }
 
 /** Create a fresh usage tracker. */
 export function createUsage(): UsageStats {
-  return { inputTokens: 0, outputTokens: 0, totalCost: 0, llmCalls: 0 };
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalCost: 0, llmCalls: 0 };
 }
 
 /** Merge child usage into parent. */
 export function mergeUsage(parent: UsageStats, child: UsageStats): void {
   parent.inputTokens += child.inputTokens;
   parent.outputTokens += child.outputTokens;
+  parent.cacheReadTokens += child.cacheReadTokens;
+  parent.cacheWriteTokens += child.cacheWriteTokens;
   parent.totalCost += child.totalCost;
   parent.llmCalls += child.llmCalls;
 }
@@ -39,6 +43,13 @@ export interface ChatMessage {
   content: string;
   /** Original pi/ai AssistantMessage — stored for multi-turn fidelity. */
   piMessage?: PiAssistantMessage;
+}
+
+/** Cache config passed through to pi/ai completeSimple. */
+export interface CacheLLMConfig {
+  enabled: boolean;
+  retention: "short" | "long";
+  sessionId: string;
 }
 
 /** Response from a single LLM call. */
@@ -77,7 +88,7 @@ function resolveModel(provider: string, modelId: string) {
 export async function llmComplete(
   messages: ChatMessage[],
   modelConfig: ModelConfig,
-  options?: { maxTokens?: number; signal?: AbortSignal; logger?: Logger; iteration?: number }
+  options?: { maxTokens?: number; signal?: AbortSignal; logger?: Logger; iteration?: number; cacheConfig?: CacheLLMConfig }
 ): Promise<LLMResponse> {
   const model = resolveModel(modelConfig.provider, modelConfig.model);
   const startTime = Date.now();
@@ -112,6 +123,14 @@ export async function llmComplete(
       } satisfies PiAssistantMessage;
     });
 
+  // Build cache options for pi/ai when cache is enabled
+  const cacheOpts = options?.cacheConfig?.enabled
+    ? {
+        cacheRetention: options.cacheConfig.retention,
+        sessionId: options.cacheConfig.sessionId,
+      }
+    : {};
+
   const response = await completeSimple(
     model,
     {
@@ -121,12 +140,15 @@ export async function llmComplete(
     {
       maxTokens: options?.maxTokens ?? 16384,
       signal: options?.signal,
+      ...cacheOpts,
     }
   );
 
   const timeMs = Date.now() - startTime;
   const inputTokens = response.usage?.input ?? 0;
   const outputTokens = response.usage?.output ?? 0;
+  const cacheReadTokens = response.usage?.cacheRead ?? 0;
+  const cacheWriteTokens = response.usage?.cacheWrite ?? 0;
   const cost = (response.usage as any)?.cost?.total ?? 0;
 
   const text = response.content
@@ -150,6 +172,8 @@ export async function llmComplete(
     usage: {
       inputTokens,
       outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
       totalCost: cost,
       llmCalls: 1,
     },

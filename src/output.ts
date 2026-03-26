@@ -17,6 +17,15 @@ export interface RLMResult {
   budgetHit?: string | null;
 }
 
+/** Cache stats included in --stats output when cache is enabled. */
+export interface CacheStats {
+  enabled: true;
+  hit: boolean;
+  tokens_cached: number;
+  tokens_read: number;
+  cost_savings: number;
+}
+
 /** Stats data emitted via --stats. */
 export interface StatsData {
   iterations: number;
@@ -28,6 +37,7 @@ export interface StatsData {
   budget_hit: string | null;
   model: string;
   run_id: string;
+  cache?: CacheStats;
 }
 
 /** Stream event emitted during iteration. */
@@ -46,6 +56,26 @@ export interface StreamEvent {
 /**
  * Build a StatsData object from an RLMResult and run metadata.
  */
+/**
+ * Estimate cost savings from cache reads.
+ *
+ * Cache reads are typically billed at ~10% of normal input token cost.
+ * We approximate savings as 90% of what those tokens would have cost at
+ * the normal input rate, derived from the run's actual cost data.
+ */
+function estimateCacheSavings(result: RLMResult): number {
+  const { inputTokens, cacheReadTokens, totalCost } = result.usage;
+  if (cacheReadTokens <= 0 || inputTokens <= 0) return 0;
+
+  // Derive per-token input cost from the run's totals (input + output)
+  const totalTokens = inputTokens + result.usage.outputTokens;
+  if (totalTokens <= 0) return 0;
+
+  const costPerToken = totalCost / totalTokens;
+  // Cache reads cost ~10% of normal input price, so savings ≈ 90% of full price
+  return cacheReadTokens * costPerToken * 0.9;
+}
+
 export function buildStats(
   result: RLMResult,
   meta: {
@@ -54,9 +84,10 @@ export function buildStats(
     batteries_used?: string[];
     budget_hit?: string | null;
     run_id?: string;
+    cache_enabled?: boolean;
   }
 ): StatsData {
-  return {
+  const stats: StatsData = {
     iterations: result.iterations,
     total_tokens: result.usage.inputTokens + result.usage.outputTokens,
     total_cost: result.usage.totalCost,
@@ -67,6 +98,18 @@ export function buildStats(
     model: result.model,
     run_id: meta.run_id ?? "",
   };
+
+  if (meta.cache_enabled) {
+    stats.cache = {
+      enabled: true,
+      hit: result.usage.cacheReadTokens > 0,
+      tokens_cached: result.usage.cacheWriteTokens,
+      tokens_read: result.usage.cacheReadTokens,
+      cost_savings: estimateCacheSavings(result),
+    };
+  }
+
+  return stats;
 }
 
 /**
