@@ -30,6 +30,52 @@ export interface PackageAvailability {
   [packageName: string]: boolean;
 }
 
+export interface PythonVersionInfo {
+  version: string;
+  valid: boolean;
+}
+
+/**
+ * Check the installed Python version.
+ * Returns version string and whether it meets the 3.10+ requirement.
+ * Throws with platform-specific install guidance if python3 is not found.
+ */
+export async function checkPythonVersion(
+  pythonPath = "python3"
+): Promise<PythonVersionInfo> {
+  try {
+    const { stdout } = await execFileAsync(pythonPath, ["--version"], {
+      timeout: 5_000,
+    });
+    const match = stdout.trim().match(/Python\s+(\d+\.\d+\.\d+)/);
+    if (!match) {
+      throw new Error(`Unexpected python version output: ${stdout.trim()}`);
+    }
+    const version = match[1];
+    const [major, minor] = version.split(".").map(Number);
+    const valid = major > 3 || (major === 3 && minor >= 10);
+    return { version, valid };
+  } catch (err: unknown) {
+    const error = err as NodeJS.ErrnoException;
+    if (error.code === "ENOENT") {
+      const platform = process.platform;
+      let guidance: string;
+      if (platform === "darwin") {
+        guidance = "brew install python@3.12";
+      } else if (platform === "win32") {
+        guidance = "Download from https://www.python.org/downloads/";
+      } else {
+        guidance =
+          "sudo apt install python3 (Debian/Ubuntu) or sudo dnf install python3 (Fedora)";
+      }
+      throw new Error(
+        `Python not found at "${pythonPath}". rlmx requires Python 3.10+.\nInstall: ${guidance}`
+      );
+    }
+    throw err;
+  }
+}
+
 /**
  * Detect which Python packages are installed.
  * Runs a single Python subprocess to check all packages at once.
