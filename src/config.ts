@@ -24,6 +24,16 @@ export interface BudgetConfig {
   maxDepth: number | null;
 }
 
+/** Cache configuration for CAG mode */
+export interface CacheConfig {
+  enabled: boolean;
+  strategy: "full";
+  sessionPrefix?: string;
+  retention: "short" | "long";
+  ttl?: number;       // seconds
+  expireTime?: string; // ISO 8601
+}
+
 /** Context loading configuration */
 export interface ContextConfig {
   extensions: string[];
@@ -47,6 +57,8 @@ export interface RlmxConfig {
   contextConfig: ContextConfig;
   /** Tool level */
   toolsLevel: ToolsLevel;
+  /** Cache configuration for CAG mode */
+  cache: CacheConfig;
   /** Config source: "yaml" | "md" | "defaults" */
   configSource: "yaml" | "md" | "defaults";
 }
@@ -62,6 +74,12 @@ const DEFAULT_BUDGET: BudgetConfig = {
   maxCost: null,
   maxTokens: null,
   maxDepth: null,
+};
+
+const DEFAULT_CACHE_CONFIG: CacheConfig = {
+  enabled: false,
+  strategy: "full",
+  retention: "long",
 };
 
 const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
@@ -91,6 +109,14 @@ interface RawYamlConfig {
     "max-depth"?: number | null;
   };
   "tools-level"?: string;
+  cache?: {
+    enabled?: boolean;
+    strategy?: string;
+    "session-prefix"?: string;
+    retention?: string;
+    ttl?: number;
+    "expire-time"?: string;
+  };
 }
 
 // ─── YAML Loading ────────────────────────────────────────
@@ -203,6 +229,34 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   const system = cfg.system?.trim() || null;
   const criteria = cfg.criteria?.trim() || null;
 
+  // Parse cache config
+  const rawRetention = cfg.cache?.retention ?? "long";
+  if (rawRetention && !["short", "long"].includes(rawRetention)) {
+    throw new Error(
+      `Invalid cache.retention "${rawRetention}" in rlmx.yaml. Must be one of: short, long.`
+    );
+  }
+  const rawStrategy = cfg.cache?.strategy ?? "full";
+  if (rawStrategy && rawStrategy !== "full") {
+    throw new Error(
+      `Invalid cache.strategy "${rawStrategy}" in rlmx.yaml. Only "full" is currently supported.`
+    );
+  }
+  const cache: CacheConfig = {
+    enabled: cfg.cache?.enabled ?? DEFAULT_CACHE_CONFIG.enabled,
+    strategy: rawStrategy as "full",
+    retention: rawRetention as "short" | "long",
+  };
+  if (cfg.cache?.["session-prefix"]) {
+    cache.sessionPrefix = cfg.cache["session-prefix"];
+  }
+  if (cfg.cache?.ttl !== undefined) {
+    cache.ttl = cfg.cache.ttl;
+  }
+  if (cfg.cache?.["expire-time"]) {
+    cache.expireTime = cfg.cache["expire-time"];
+  }
+
   return {
     system,
     tools,
@@ -212,6 +266,7 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     budget,
     contextConfig,
     toolsLevel,
+    cache,
     configSource: "yaml",
   };
 }
@@ -325,6 +380,7 @@ async function loadConfigFromMd(dir: string): Promise<RlmxConfig> {
     budget: { ...DEFAULT_BUDGET },
     contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
     toolsLevel: "core",
+    cache: { ...DEFAULT_CACHE_CONFIG },
     configSource: "md",
   };
 }
@@ -342,6 +398,7 @@ function defaultConfig(dir: string): RlmxConfig {
     budget: { ...DEFAULT_BUDGET },
     contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
     toolsLevel: "core",
+    cache: { ...DEFAULT_CACHE_CONFIG },
     configSource: "defaults",
   };
 }

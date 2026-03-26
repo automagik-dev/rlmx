@@ -34,6 +34,7 @@ Options:
   --max-tokens <n>        Maximum total tokens per run
   --max-depth <n>         Maximum recursive rlm_query depth
   --ext <list>            File extensions for context dirs (comma-separated)
+  --cache                 Enable cache mode (full context in system prompt for provider caching)
 
 Config:
   rlmx.yaml               Single config file (run "rlmx init" to create)
@@ -64,6 +65,7 @@ interface CliOptions {
   maxTokens: number | null;
   maxDepth: number | null;
   ext: string[] | null;
+  cache: boolean;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -85,6 +87,7 @@ function parseCliArgs(args: string[]): CliOptions {
       "max-tokens": { type: "string" },
       "max-depth": { type: "string" },
       ext: { type: "string" },
+      cache: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -95,7 +98,7 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "help", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null,
+      maxDepth: null, ext: null, cache: false,
     };
   }
 
@@ -104,7 +107,7 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "version", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null,
+      maxDepth: null, ext: null, cache: false,
     };
   }
 
@@ -147,6 +150,7 @@ function parseCliArgs(args: string[]): CliOptions {
     maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"] as string, 10) : null,
     maxDepth: values["max-depth"] ? parseInt(values["max-depth"] as string, 10) : null,
     ext,
+    cache: values.cache as boolean,
   };
 }
 
@@ -194,6 +198,9 @@ async function runQuery(opts: CliOptions): Promise<void> {
   const config = await loadConfig(configDir);
 
   // Apply CLI overrides to config
+  if (opts.cache) {
+    config.cache.enabled = true;
+  }
   if (opts.tools) {
     config.toolsLevel = opts.tools;
   }
@@ -245,6 +252,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
     timeout: opts.timeout,
     verbose: opts.verbose,
     output: opts.output,
+    cache: opts.cache,
   });
 
   const timeMs = Date.now() - startTime;

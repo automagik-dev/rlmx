@@ -11,6 +11,7 @@
 
 import type { RlmxConfig, ToolDef } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
+import { buildCachedSystemPrompt } from "./cache.js";
 import { REPL } from "./repl.js";
 import {
   llmComplete,
@@ -35,6 +36,7 @@ export interface RLMOptions {
   timeout: number;
   verbose: boolean;
   output: "text" | "json" | "stream";
+  cache: boolean;
 }
 
 const DEFAULT_OPTIONS: RLMOptions = {
@@ -42,6 +44,7 @@ const DEFAULT_OPTIONS: RLMOptions = {
   timeout: 300_000,
   verbose: false,
   output: "text",
+  cache: false,
 };
 
 /**
@@ -157,8 +160,10 @@ export async function rlmLoop(
   const usage = createUsage();
   const budget = new BudgetTracker(config.budget);
 
-  // Build system prompt
-  const systemPrompt = buildSystemPrompt(config, context);
+  // Build system prompt — cache mode embeds full context, normal mode uses metadata only
+  const systemPrompt = opts.cache
+    ? buildCachedSystemPrompt(config, context)
+    : buildSystemPrompt(config, context);
   const contextMetadata = buildContextMetadata(context);
 
   // Prepare abort controller for timeout
