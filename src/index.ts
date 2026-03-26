@@ -4,7 +4,7 @@ export type { RlmxConfig, ToolDef, ModelConfig, BudgetConfig, ContextConfig, Too
 export { scaffold, needsScaffold, SCAFFOLD_FILE_NAMES } from "./scaffold.js";
 
 export { loadContext, loadContextFromDir, loadContextFromFile, loadContextFromStdin } from "./context.js";
-export type { LoadedContext, ContextItem } from "./context.js";
+export type { LoadedContext, ContextItem, CollectOptions } from "./context.js";
 
 export { REPL } from "./repl.js";
 export type { REPLStartOptions, LLMRequestHandler } from "./repl.js";
