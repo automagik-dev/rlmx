@@ -9,8 +9,11 @@ export type { LoadedContext, ContextItem, CollectOptions } from "./context.js";
 export { REPL } from "./repl.js";
 export type { REPLStartOptions, LLMRequestHandler } from "./repl.js";
 
-export { detectPackages, formatPackagePrompt, PROBE_PACKAGES } from "./detect.js";
-export type { PackageAvailability } from "./detect.js";
+export { detectPackages, formatPackagePrompt, checkPythonVersion, PROBE_PACKAGES } from "./detect.js";
+export type { PackageAvailability, PythonVersionInfo } from "./detect.js";
+
+export { BudgetTracker } from "./budget.js";
+export type { BudgetState } from "./budget.js";
 
 export { rlmLoop } from "./rlm.js";
 export type { RLMOptions } from "./rlm.js";

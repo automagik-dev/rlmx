@@ -14,6 +14,7 @@ export interface RLMResult {
   usage: UsageStats;
   iterations: number;
   model: string;
+  budgetHit?: string | null;
 }
 
 /** Stats data emitted via --stats. */
