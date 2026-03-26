@@ -11,7 +11,7 @@
 
 import type { RlmxConfig, ToolDef } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
-import { buildCachedSystemPrompt, computeContentHash, buildSessionId } from "./cache.js";
+import { buildCachedSystemPrompt, computeContentHash, buildSessionId, estimateTokens } from "./cache.js";
 import { REPL } from "./repl.js";
 import {
   llmComplete,
@@ -30,6 +30,7 @@ import {
 } from "./parser.js";
 import { emitStreamEvent, logVerbose, type RLMResult } from "./output.js";
 import { BudgetTracker } from "./budget.js";
+import type { Logger } from "./logger.js";
 
 /** Options for the RLM loop. */
 export interface RLMOptions {
@@ -38,6 +39,7 @@ export interface RLMOptions {
   verbose: boolean;
   output: "text" | "json" | "stream";
   cache: boolean;
+  logger?: Logger;
 }
 
 const DEFAULT_OPTIONS: RLMOptions = {
@@ -168,14 +170,25 @@ export async function rlmLoop(
   const contextMetadata = buildContextMetadata(context);
 
   // Build cache config for LLM calls (passed through to pi/ai completeSimple)
-  const cacheConfig: CacheLLMConfig | undefined =
-    opts.cache && context
-      ? {
-          enabled: true,
-          retention: config.cache.retention,
-          sessionId: buildSessionId(config.cache.sessionPrefix, computeContentHash(context)),
-        }
-      : undefined;
+  let cacheConfig: CacheLLMConfig | undefined;
+  if (opts.cache && context) {
+    const contentHash = computeContentHash(context);
+    const sessionId = buildSessionId(config.cache.sessionPrefix, contentHash);
+    cacheConfig = {
+      enabled: true,
+      retention: config.cache.retention,
+      sessionId,
+    };
+
+    // Emit cache_init log event
+    if (opts.logger) {
+      opts.logger.cacheInit({
+        contentHash,
+        sessionId,
+        estimatedTokens: estimateTokens(context),
+      });
+    }
+  }
 
   // Prepare abort controller for timeout
   const abortController = new AbortController();
