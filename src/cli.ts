@@ -11,6 +11,7 @@ import { outputResult, buildStats, emitStats } from "./output.js";
 import { createLogger } from "./logger.js";
 import { checkPythonVersion } from "./detect.js";
 import { estimateTokens, validateContextSize } from "./cache.js";
+import { runBatch } from "./batch.js";
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
@@ -18,6 +19,7 @@ Usage:
   rlmx "query" [options]          Run an RLM query
   rlmx init [--dir <path>]       Scaffold rlmx.yaml config
   rlmx cache [options]           Pre-warm cache or estimate context size
+  rlmx batch <file> [options]    Bulk interrogation from questions file
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -38,6 +40,7 @@ Options:
   --ext <list>            File extensions for context dirs (comma-separated)
   --cache                 Enable cache mode (full context in system prompt for provider caching)
   --estimate              Show context size and cost estimate without caching (cache command)
+  --parallel <n>          Concurrent questions for batch command (default: 1)
 
 Config:
   rlmx.yaml               Single config file (run "rlmx init" to create)
@@ -52,11 +55,13 @@ Examples:
   echo "data" | rlmx "Analyze this" --log run.jsonl
   rlmx cache --context ./docs/ --estimate
   rlmx cache --context ./docs/
+  rlmx batch questions.txt --context ./docs/ --cache --max-cost 1.00
+  rlmx batch questions.txt --context ./src/ --max-iterations 3
 `;
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -72,6 +77,8 @@ interface CliOptions {
   ext: string[] | null;
   cache: boolean;
   estimate: boolean;
+  batchFile: string | null;
+  parallel: number;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -95,6 +102,7 @@ function parseCliArgs(args: string[]): CliOptions {
       ext: { type: "string" },
       cache: { type: "boolean", default: false },
       estimate: { type: "boolean", default: false },
+      parallel: { type: "string", default: "1" },
     },
     allowPositionals: true,
     strict: false,
@@ -106,6 +114,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, cache: false, estimate: false,
+      batchFile: null, parallel: 1,
     };
   }
 
@@ -115,13 +124,16 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, cache: false, estimate: false,
+      batchFile: null, parallel: 1,
     };
   }
 
   const command = positionals[0] === "init" ? "init"
     : positionals[0] === "cache" ? "cache"
+    : positionals[0] === "batch" ? "batch"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
+  const batchFile = command === "batch" ? positionals[1] ?? null : null;
   const dir = (values.dir as string) || process.cwd();
 
   const outputMode = values.output as string;
@@ -161,6 +173,8 @@ function parseCliArgs(args: string[]): CliOptions {
     ext,
     cache: values.cache as boolean,
     estimate: values.estimate as boolean,
+    batchFile,
+    parallel: parseInt(values.parallel as string, 10) || 1,
   };
 }
 
@@ -263,6 +277,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
     verbose: opts.verbose,
     output: opts.output,
     cache: opts.cache,
+    logger,
   });
 
   const timeMs = Date.now() - startTime;
@@ -285,6 +300,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
       tools_level: config.toolsLevel,
       budget_hit: result.budgetHit,
       run_id: logger.runId,
+      cache_enabled: opts.cache,
     });
     // For JSON output, stats are included in the response
     if (opts.output === "json") {
@@ -385,6 +401,58 @@ async function runCache(opts: CliOptions): Promise<void> {
   console.error(`  estimated cost:   $${estimatedCost.toFixed(4)}`);
 }
 
+async function runBatchCommand(opts: CliOptions): Promise<void> {
+  if (!opts.batchFile) {
+    console.error("Error: batch command requires a questions file path.");
+    console.error("Usage: rlmx batch <questions.txt> [--context <path>] [--max-cost <n>]");
+    process.exit(1);
+  }
+
+  const configDir = process.cwd();
+
+  // Load config
+  const config = await loadConfig(configDir);
+
+  // Apply CLI overrides to config
+  config.cache.enabled = true; // batch always uses cache
+  if (opts.tools) {
+    config.toolsLevel = opts.tools;
+  }
+  if (opts.maxCost !== null) {
+    config.budget.maxCost = opts.maxCost;
+  }
+  if (opts.maxTokens !== null) {
+    config.budget.maxTokens = opts.maxTokens;
+  }
+  if (opts.maxDepth !== null) {
+    config.budget.maxDepth = opts.maxDepth;
+  }
+
+  // Load context if provided
+  let context = null;
+  if (opts.context) {
+    const contextPath = resolve(opts.context);
+    const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+    context = await loadContext(contextPath, contextOpts);
+    if (opts.verbose) {
+      console.error(`rlmx batch: loaded context — ${context.metadata}`);
+    }
+  }
+
+  if (opts.verbose) {
+    console.error(`rlmx batch: processing ${opts.batchFile}`);
+  }
+
+  await runBatch(resolve(opts.batchFile), context, config, {
+    maxIterations: opts.maxIterations,
+    timeout: opts.timeout,
+    verbose: opts.verbose,
+    cache: true,
+    maxCost: opts.maxCost ?? undefined,
+    parallel: opts.parallel,
+  });
+}
+
 async function main(): Promise<void> {
   const opts = parseCliArgs(process.argv.slice(2));
 
@@ -408,6 +476,10 @@ async function main(): Promise<void> {
 
     case "cache":
       await runCache(opts);
+      break;
+
+    case "batch":
+      await runBatchCommand(opts);
       break;
 
     case "query":
