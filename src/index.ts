@@ -9,6 +9,9 @@ export type { LoadedContext, ContextItem } from "./context.js";
 export { REPL } from "./repl.js";
 export type { REPLStartOptions, LLMRequestHandler } from "./repl.js";
 
+export { detectPackages, formatPackagePrompt, PROBE_PACKAGES } from "./detect.js";
+export type { PackageAvailability } from "./detect.js";
+
 export { rlmLoop } from "./rlm.js";
 export type { RLMOptions } from "./rlm.js";
 

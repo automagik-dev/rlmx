@@ -6,6 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -18,8 +19,11 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Default Python path for repl_server.py — relative to dist/
+import type { ToolsLevel } from "./config.js";
+
+// Default paths relative to dist/
 const REPL_SERVER_PATH = join(__dirname, "..", "python", "repl_server.py");
+const BATTERIES_PATH = join(__dirname, "..", "python", "batteries.py");
 
 /** Options passed to REPL.start() */
 export interface REPLStartOptions {
@@ -27,6 +31,8 @@ export interface REPLStartOptions {
   context?: string | string[] | Record<string, unknown>;
   /** Custom tools to inject as Python code strings (name -> code). */
   tools?: Record<string, string>;
+  /** Tool level: core (6 paper functions), standard (+ batteries), full (+ package info). */
+  toolsLevel?: ToolsLevel;
   /** Python executable path (default: "python3"). */
   pythonPath?: string;
   /** Path to repl_server.py (auto-detected). */
@@ -95,6 +101,12 @@ export class REPL {
         await this.execute(code);
       }
     }
+
+    // Load batteries for standard/full tool levels
+    const level = options.toolsLevel ?? "core";
+    if (level === "standard" || level === "full") {
+      await this._loadBatteries();
+    }
   }
 
   /** Execute Python code in the REPL and return the result. */
@@ -152,6 +164,11 @@ export class REPL {
   }
 
   // ─── Internal ────────────────────────────────────────────
+
+  private async _loadBatteries(): Promise<void> {
+    const code = await readFile(BATTERIES_PATH, "utf-8");
+    await this.execute(code);
+  }
 
   private _send(msg: Record<string, unknown>): void {
     if (!this.process?.stdin?.writable) {
