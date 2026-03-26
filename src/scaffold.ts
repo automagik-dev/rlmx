@@ -97,6 +97,16 @@ context:
     - .git
     - dist
 
+# ─── Cache (CAG Mode) ───────────────────────────────────
+# Enable cache-augmented generation. Full context is baked into the
+# system prompt and cached at the provider for subsequent queries.
+# cache:
+#   enabled: false             # true to enable CAG mode (or use --cache flag)
+#   retention: long            # short|long — maps to pi/ai cacheRetention
+#   ttl: 3600                  # seconds — provider-specific TTL
+#   expire-time: ""            # ISO 8601 — for Google explicit caching
+#   session-prefix: ""         # prepended to content hash for sessionId
+
 # ─── Budget ───────────────────────────────────────────────
 # Cost and resource limits. null = unlimited.
 # max-cost: maximum USD spend per run

@@ -45,6 +45,64 @@ rlmx implements the RLM (REPL-LM) algorithm:
 
 4. **Termination** — The loop ends when the LLM calls `FINAL("answer")` or `FINAL_VAR("variable_name")`, or when max iterations (default 30) is reached.
 
+## CAG Mode (Cache-Augmented Generation)
+
+CAG mode bakes your full context into the system prompt and leverages provider-level caching so that subsequent queries against the same context are dramatically cheaper and faster.
+
+### When to use `--cache` vs default RLM
+
+| Mode | Best for | How it works |
+|------|----------|-------------|
+| **Default (RLM)** | Large corpora, exploratory analysis | Context loaded into REPL `context` variable; LLM navigates it programmatically |
+| **`--cache`** | Repeated questions on same docs, study sessions, batch Q&A | Full context injected into system prompt and cached at the provider |
+
+Use `--cache` when you plan to ask multiple questions about the same set of documents. Use default RLM when the context is too large for a single system prompt or you need programmatic navigation.
+
+### Cost comparison
+
+| Query | Cost |
+|-------|------|
+| First query (cache miss) | Full input token cost (context + prompt) |
+| Subsequent queries (cache hit) | **50-90% cheaper** -- only cache-read tokens are billed |
+
+The exact savings depend on your provider. Google and Anthropic both offer significant discounts on cached input tokens.
+
+### Batch usage
+
+Process a list of questions against cached context:
+
+```bash
+rlmx batch questions.txt --context ./docs/
+rlmx batch questions.txt --context ./docs/ --output json
+```
+
+Each question in the file is run sequentially, reusing the cached context. The first question pays full cost; subsequent questions benefit from the cache.
+
+### Cache warmup and estimation
+
+Warm the cache and estimate costs before running queries:
+
+```bash
+rlmx cache --context ./docs/ --estimate
+```
+
+This loads your context, calculates token counts, and shows estimated costs for cached vs uncached queries without making any LLM calls.
+
+### YAML configuration
+
+Enable cache in your `rlmx.yaml`:
+
+```yaml
+cache:
+  enabled: true              # or use --cache flag per-invocation
+  retention: long            # short|long -- maps to provider cache retention
+  ttl: 3600                  # seconds -- provider-specific TTL
+  expire-time: ""            # ISO 8601 -- for Google explicit caching
+  session-prefix: "myproject" # prepended to content hash for sessionId
+```
+
+For detailed provider-specific TTL behavior (Google, Anthropic, Bedrock, OpenAI), see [docs/TTL_CONTROL.md](docs/TTL_CONTROL.md).
+
 ## Config Files
 
 Drop `.md` files in your working directory to customize behavior. Run `rlmx init` to scaffold defaults with inline comments.
@@ -91,11 +149,14 @@ Supports any provider available in [pi/ai](https://github.com/nickarora/pi-ai): 
 ## CLI Reference
 
 ```
-rlmx "query" [options]          Run an RLM query
-rlmx init [--dir <path>]       Scaffold .md config files
+rlmx "query" [options]                Run an RLM query
+rlmx init [--dir <path>]             Scaffold config files
+rlmx batch <file> [options]           Run batch queries from a file
+rlmx cache [options]                  Cache management (warmup, estimate)
 
 Options:
   --context <path>        Path to context (directory or file)
+  --cache                 Enable CAG mode (cache context in system prompt)
   --output <mode>         Output mode: text (default), json, stream
   --verbose               Show iteration progress on stderr
   --max-iterations <n>    Maximum RLM iterations (default: 30)
@@ -103,6 +164,10 @@ Options:
   --dir <path>            Directory for init command (default: cwd)
   --help, -h              Show this help message
   --version, -v           Show version
+
+Cache options:
+  --estimate              Estimate cache costs without making LLM calls
+  --session-prefix <str>  Override session prefix for cache key
 ```
 
 ## Output Modes
