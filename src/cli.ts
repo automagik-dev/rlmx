@@ -10,12 +10,14 @@ import { rlmLoop } from "./rlm.js";
 import { outputResult, buildStats, emitStats } from "./output.js";
 import { createLogger } from "./logger.js";
 import { checkPythonVersion } from "./detect.js";
+import { estimateTokens, validateContextSize } from "./cache.js";
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
 Usage:
   rlmx "query" [options]          Run an RLM query
   rlmx init [--dir <path>]       Scaffold rlmx.yaml config
+  rlmx cache [options]           Pre-warm cache or estimate context size
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -35,6 +37,7 @@ Options:
   --max-depth <n>         Maximum recursive rlm_query depth
   --ext <list>            File extensions for context dirs (comma-separated)
   --cache                 Enable cache mode (full context in system prompt for provider caching)
+  --estimate              Show context size and cost estimate without caching (cache command)
 
 Config:
   rlmx.yaml               Single config file (run "rlmx init" to create)
@@ -47,11 +50,13 @@ Examples:
   rlmx "Quick question" --max-cost 0.10 --max-tokens 5000
   rlmx init --dir ./my-project
   echo "data" | rlmx "Analyze this" --log run.jsonl
+  rlmx cache --context ./docs/ --estimate
+  rlmx cache --context ./docs/
 `;
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version";
+  command: "query" | "init" | "help" | "version" | "cache";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -66,6 +71,7 @@ interface CliOptions {
   maxDepth: number | null;
   ext: string[] | null;
   cache: boolean;
+  estimate: boolean;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -88,6 +94,7 @@ function parseCliArgs(args: string[]): CliOptions {
       "max-depth": { type: "string" },
       ext: { type: "string" },
       cache: { type: "boolean", default: false },
+      estimate: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -98,7 +105,7 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "help", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null, cache: false,
+      maxDepth: null, ext: null, cache: false, estimate: false,
     };
   }
 
@@ -107,11 +114,13 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "version", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null, cache: false,
+      maxDepth: null, ext: null, cache: false, estimate: false,
     };
   }
 
-  const command = positionals[0] === "init" ? "init" : "query";
+  const command = positionals[0] === "init" ? "init"
+    : positionals[0] === "cache" ? "cache"
+    : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const dir = (values.dir as string) || process.cwd();
 
@@ -151,6 +160,7 @@ function parseCliArgs(args: string[]): CliOptions {
     maxDepth: values["max-depth"] ? parseInt(values["max-depth"] as string, 10) : null,
     ext,
     cache: values.cache as boolean,
+    estimate: values.estimate as boolean,
   };
 }
 
@@ -288,6 +298,93 @@ async function runQuery(opts: CliOptions): Promise<void> {
   }
 }
 
+// Rough cost estimate per 1M input tokens by provider (USD)
+const COST_PER_1M_INPUT: Record<string, number> = {
+  anthropic: 3.0,    // Claude Sonnet ~$3/M input
+  openai: 2.5,       // GPT-4o ~$2.50/M input
+  google: 0.075,     // Gemini 2.0 Flash — very cheap
+  "amazon-bedrock": 3.0,
+};
+
+async function runCache(opts: CliOptions): Promise<void> {
+  if (!opts.context) {
+    console.error("Error: --context is required for the cache command.");
+    console.error("Usage: rlmx cache --context <path> [--estimate]");
+    process.exit(1);
+  }
+
+  // Load config
+  const configDir = process.cwd();
+  const config = await loadConfig(configDir);
+
+  // Apply CLI overrides
+  if (opts.tools) {
+    config.toolsLevel = opts.tools;
+  }
+
+  const provider = config.model.provider;
+  const model = config.model.model;
+
+  // Load context
+  const contextPath = resolve(opts.context);
+  const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+  const context = await loadContext(contextPath, contextOpts);
+
+  // Validate context size
+  const validation = validateContextSize(context, provider);
+
+  if (!validation.valid) {
+    console.error(`Error: ${validation.message}`);
+    process.exit(1);
+  }
+
+  // Estimate cost
+  const costPer1M = COST_PER_1M_INPUT[provider] ?? 3.0;
+  const estimatedCost = (validation.estimatedTokens / 1_000_000) * costPer1M;
+  const ttl = config.cache.ttl ?? (config.cache.retention === "long" ? 3600 : 300);
+
+  if (opts.estimate) {
+    // Print stats and exit — no actual caching
+    console.log("rlmx cache estimate");
+    console.log("---");
+    console.log(`  context:          ${opts.context}`);
+    console.log(`  metadata:         ${context.metadata}`);
+    console.log(`  estimated tokens: ${validation.estimatedTokens.toLocaleString()}`);
+    console.log(`  provider limit:   ${validation.limit.toLocaleString()} tokens`);
+    console.log(`  utilization:      ${((validation.estimatedTokens / validation.limit) * 100).toFixed(1)}%`);
+    console.log(`  provider:         ${provider}`);
+    console.log(`  model:            ${model}`);
+    console.log(`  ttl:              ${ttl}s`);
+    console.log(`  estimated cost:   $${estimatedCost.toFixed(4)}`);
+    return;
+  }
+
+  // Warmup: run a minimal rlmLoop with cache enabled
+  console.error(`rlmx: warming cache for ${opts.context} (~${validation.estimatedTokens.toLocaleString()} tokens)`);
+
+  config.cache.enabled = true;
+
+  try {
+    await rlmLoop("warmup", context, config, {
+      maxIterations: 1,
+      timeout: opts.timeout,
+      verbose: opts.verbose,
+      output: "text",
+      cache: true,
+    });
+  } catch {
+    // Warmup may produce a minimal/empty result — that's OK
+    // The goal is just to prime the provider's cache
+  }
+
+  console.error("rlmx: cache warmup complete");
+  console.error(`  provider:         ${provider}`);
+  console.error(`  model:            ${model}`);
+  console.error(`  estimated tokens: ${validation.estimatedTokens.toLocaleString()}`);
+  console.error(`  ttl:              ${ttl}s`);
+  console.error(`  estimated cost:   $${estimatedCost.toFixed(4)}`);
+}
+
 async function main(): Promise<void> {
   const opts = parseCliArgs(process.argv.slice(2));
 
@@ -307,6 +404,10 @@ async function main(): Promise<void> {
 
     case "init":
       await runInit(opts.dir);
+      break;
+
+    case "cache":
+      await runCache(opts);
       break;
 
     case "query":

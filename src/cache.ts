@@ -11,6 +11,14 @@ import { createHash } from "node:crypto";
 import type { RlmxConfig, CacheConfig } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
 
+// Provider context window limits (approximate token counts)
+const PROVIDER_LIMITS: Record<string, number> = {
+  anthropic: 200000,
+  openai: 128000,
+  google: 1000000,     // Gemini supports 1M+
+  "amazon-bedrock": 128000,
+};
+
 /**
  * Estimate token count from context.
  * Uses chars / 4 with a 20% safety margin (i.e., multiplied by 1.2).
@@ -27,6 +35,35 @@ export function estimateTokens(context: LoadedContext): number {
 
   // chars / 4, then 20% safety margin
   return Math.ceil((totalChars / 4) * 1.2);
+}
+
+/** Result of context size validation against a provider's limit. */
+export interface ValidationResult {
+  valid: boolean;
+  estimatedTokens: number;
+  limit: number;
+  message?: string;
+}
+
+/**
+ * Validate that a loaded context fits within a provider's context window.
+ * Returns validation status with estimated token count and the limit.
+ */
+export function validateContextSize(
+  context: LoadedContext,
+  provider: string
+): ValidationResult {
+  const tokens = estimateTokens(context);
+  const limit = PROVIDER_LIMITS[provider] ?? 128000;
+  if (tokens > limit) {
+    return {
+      valid: false,
+      estimatedTokens: tokens,
+      limit,
+      message: `Context is ~${tokens} tokens, provider limit is ${limit}. Reduce with context.exclude or split into collections.`,
+    };
+  }
+  return { valid: true, estimatedTokens: tokens, limit };
 }
 
 /**
