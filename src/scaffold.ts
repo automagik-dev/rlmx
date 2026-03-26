@@ -13,9 +13,9 @@ const RLMX_YAML_DEFAULT = `# rlmx.yaml — Single config file for rlmx (RLM algo
 # model: model ID for the main RLM loop
 # sub-call-model: model for llm_query() sub-calls (cheaper/faster)
 model:
-  provider: anthropic
-  model: claude-sonnet-4-5
-  sub-call-model: claude-haiku-4-5
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  sub-call-model: gemini-3.1-flash-lite-preview
 
 # ─── System Prompt ────────────────────────────────────────
 # The system prompt sent to the LLM. This is the RLM paper prompt.

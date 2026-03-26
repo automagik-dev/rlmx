@@ -81,9 +81,9 @@ def summarize_chunk(text, max_words=100):
 ### MODEL.md Format
 
 ```markdown
-provider: anthropic
-model: claude-sonnet-4-5
-sub-call-model: claude-haiku-4-5
+provider: google
+model: gemini-3.1-flash-lite-preview
+sub-call-model: gemini-3.1-flash-lite-preview
 ```
 
 Supports any provider available in [pi/ai](https://github.com/nickarora/pi-ai): `anthropic`, `openai`, `google`, etc.
@@ -125,7 +125,7 @@ Returns:
   "references": ["docs/start/create-project.md", "docs/concept/inter-process-communication.md"],
   "usage": { "inputTokens": 12500, "outputTokens": 3200, "llmCalls": 5 },
   "iterations": 3,
-  "model": "anthropic/claude-sonnet-4-5"
+  "model": "google/gemini-3.1-flash-lite-preview"
 }
 ```
 
@@ -150,9 +150,9 @@ Emits JSONL events per iteration, then a final event.
 
 rlmx uses pi/ai for LLM calls. Set the appropriate API key for your provider:
 
+- `GEMINI_API_KEY` — for Google Gemini models (default provider)
 - `ANTHROPIC_API_KEY` — for Anthropic models
 - `OPENAI_API_KEY` — for OpenAI models
-- `GOOGLE_API_KEY` — for Google models
 
 ## Programmatic API
 

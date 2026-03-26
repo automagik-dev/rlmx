@@ -75,7 +75,7 @@ tools-level: standard
   it("returns defaults when no config files exist", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cfg-"));
     const cfg = await loadConfig(dir);
-    assert.equal(cfg.model.provider, "anthropic");
+    assert.equal(cfg.model.provider, "google");
     assert.equal(cfg.configSource, "defaults");
     await rm(dir, { recursive: true });
   });
@@ -117,6 +117,6 @@ describe("parseModelMd", () => {
 
   it("uses defaults for missing keys", () => {
     const model = parseModelMd("");
-    assert.equal(model.provider, "anthropic");
+    assert.equal(model.provider, "google");
   });
 });

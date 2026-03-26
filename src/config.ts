@@ -66,8 +66,8 @@ export interface RlmxConfig {
 // ─── Defaults ────────────────────────────────────────────
 
 const DEFAULT_MODEL: ModelConfig = {
-  provider: "anthropic",
-  model: "claude-sonnet-4-5",
+  provider: "google",
+  model: "gemini-3.1-flash-lite-preview",
 };
 
 const DEFAULT_BUDGET: BudgetConfig = {

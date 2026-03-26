@@ -3,8 +3,8 @@
 
 model:
   provider: google
-  model: gemini-2.5-flash
-  sub-call-model: gemini-2.5-flash
+  model: gemini-3.1-flash-lite-preview
+  sub-call-model: gemini-3.1-flash-lite-preview
 
 system: |
   You are navigating the rlmx codebase — an npm CLI that implements
