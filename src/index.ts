@@ -26,7 +26,7 @@ export {
   createUsage,
   mergeUsage,
 } from "./llm.js";
-export type { ChatMessage, LLMResponse, UsageStats } from "./llm.js";
+export type { ChatMessage, LLMResponse, UsageStats, CacheLLMConfig } from "./llm.js";
 
 export {
   extractCodeBlocks,

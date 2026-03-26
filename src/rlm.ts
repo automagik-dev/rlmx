@@ -11,7 +11,7 @@
 
 import type { RlmxConfig, ToolDef } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
-import { buildCachedSystemPrompt } from "./cache.js";
+import { buildCachedSystemPrompt, computeContentHash, buildSessionId } from "./cache.js";
 import { REPL } from "./repl.js";
 import {
   llmComplete,
@@ -20,6 +20,7 @@ import {
   mergeUsage,
   type ChatMessage,
   type UsageStats,
+  type CacheLLMConfig,
 } from "./llm.js";
 import {
   extractCodeBlocks,
@@ -166,6 +167,16 @@ export async function rlmLoop(
     : buildSystemPrompt(config, context);
   const contextMetadata = buildContextMetadata(context);
 
+  // Build cache config for LLM calls (passed through to pi/ai completeSimple)
+  const cacheConfig: CacheLLMConfig | undefined =
+    opts.cache && context
+      ? {
+          enabled: true,
+          retention: config.cache.retention,
+          sessionId: buildSessionId(config.cache.sessionPrefix, computeContentHash(context)),
+        }
+      : undefined;
+
   // Prepare abort controller for timeout
   const abortController = new AbortController();
   const timeoutHandle = setTimeout(() => {
@@ -227,6 +238,7 @@ export async function rlmLoop(
       // Call LLM
       const response = await llmComplete(messages, config.model, {
         signal: abortController.signal,
+        cacheConfig,
       });
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
@@ -387,7 +399,7 @@ export async function rlmLoop(
       logVerbose(opts.maxIterations, "max iterations reached, forcing final answer");
     }
 
-    const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal);
+    const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal, cacheConfig);
     clearTimeout(timeoutHandle);
     await repl.stop();
 
@@ -423,7 +435,8 @@ async function forceFinalAnswer(
   messages: ChatMessage[],
   config: RlmxConfig,
   usage: UsageStats,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cacheConfig?: CacheLLMConfig
 ): Promise<string> {
   const forceMessages: ChatMessage[] = [
     ...messages,
@@ -434,7 +447,7 @@ async function forceFinalAnswer(
     },
   ];
 
-  const response = await llmComplete(forceMessages, config.model, { signal });
+  const response = await llmComplete(forceMessages, config.model, { signal, cacheConfig });
   mergeUsage(usage, response.usage);
   return response.text;
 }
