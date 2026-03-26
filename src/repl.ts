@@ -78,6 +78,7 @@ export class REPL {
 
   // Battery tracking
   private _batteriesUsed = new Set<string>();
+  private _skipTracking = false;
 
   // Optional logger
   private _logger: Logger | null = null;
@@ -154,7 +155,21 @@ export class REPL {
 
   /** Execute Python code in the REPL and return the result. */
   async execute(code: string, timeoutMs = 30_000): Promise<ExecuteResult> {
-    if (!this.process || !this.ready) {
+    // Distinguish "never started" from "started but crashed"
+    if (!this.process) {
+      throw new Error("REPL not started. Call start() first.");
+    }
+
+    // Process was started but has since crashed — attempt recovery
+    if (!this.ready && !this._recovering) {
+      return this._recoverAndRetry(
+        code,
+        timeoutMs,
+        new Error("REPL subprocess exited unexpectedly")
+      );
+    }
+
+    if (!this.ready) {
       throw new Error("REPL not started. Call start() first.");
     }
 
@@ -231,6 +246,7 @@ export class REPL {
 
   /** Track which battery functions appear in executed code. */
   private _trackBatteryUsage(code: string): void {
+    if (this._skipTracking) return;
     for (const name of BATTERY_FUNCTION_NAMES) {
       if (code.includes(name)) {
         this._batteriesUsed.add(name);
