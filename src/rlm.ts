@@ -30,6 +30,7 @@ import {
 } from "./parser.js";
 import { emitStreamEvent, logVerbose, type RLMResult } from "./output.js";
 import { BudgetTracker } from "./budget.js";
+import { isGoogleProvider } from "./gemini.js";
 import type { Logger } from "./logger.js";
 
 /** Options for the RLM loop. */
@@ -49,6 +50,14 @@ const DEFAULT_OPTIONS: RLMOptions = {
   output: "text",
   cache: false,
 };
+
+/**
+ * Check if structured output mode is active.
+ * Structured output is when output.schema is set and provider is Google (Gemini).
+ */
+function isStructuredOutputMode(config: RlmxConfig): boolean {
+  return config.output.schema !== null && isGoogleProvider(config.model.provider);
+}
 
 /**
  * Build the system prompt from config, tools, criteria, and context metadata.
@@ -254,6 +263,7 @@ export async function rlmLoop(
         cacheConfig,
         thinkingLevel: config.gemini.thinkingLevel as any,
         outputSchema: config.output.schema,
+        geminiConfig: config.gemini,
       });
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
@@ -269,6 +279,16 @@ export async function rlmLoop(
 
       // Extract code blocks
       const codeBlocks = extractCodeBlocks(responseText);
+
+      // In structured output mode, treat the API response as the final answer (schema-enforced JSON)
+      if (isStructuredOutputMode(config) && codeBlocks.length === 0) {
+        clearTimeout(timeoutHandle);
+        await repl.stop();
+        if (opts.verbose) {
+          logVerbose(iteration, "structured output mode: response is final answer");
+        }
+        return buildResult(responseText, usage, iteration + 1, config, budget.getState().budgetHit);
+      }
 
       // Check for FINAL signal in the text (outside code blocks)
       const finalSignal = detectFinal(responseText, codeBlocks);

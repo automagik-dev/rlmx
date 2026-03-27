@@ -389,6 +389,46 @@ export async function handleLLMRequest(
       return results;
     }
 
+    case "web_search": {
+      if (!isGoogleProvider(config.model.provider)) {
+        return [
+          `Error: web_search() requires provider: google. Current provider: ${config.model.provider}`,
+        ];
+      }
+      const wsResp = await llmComplete(
+        [{ role: "user", content: request.prompts[0] }],
+        config.model,
+        {
+          signal,
+          geminiConfig: { ...config.gemini, googleSearch: true },
+        }
+      );
+      mergeUsage(usage, wsResp.usage);
+      return [wsResp.text];
+    }
+
+    case "fetch_url": {
+      if (!isGoogleProvider(config.model.provider)) {
+        return [
+          `Error: fetch_url() requires provider: google. Current provider: ${config.model.provider}`,
+        ];
+      }
+      const fuResp = await llmComplete(
+        [{ role: "user", content: `Fetch and return the content from: ${request.prompts[0]}` }],
+        config.model,
+        {
+          signal,
+          geminiConfig: { ...config.gemini, urlContext: true },
+        }
+      );
+      mergeUsage(usage, fuResp.usage);
+      return [fuResp.text];
+    }
+
+    case "generate_image": {
+      return [`Error: generate_image() is not yet fully implemented. Planned for v0.4 release.`];
+    }
+
     default:
       return request.prompts.map(
         () => `Error: unknown request type "${request.request_type}"`
