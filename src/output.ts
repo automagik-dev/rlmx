@@ -38,6 +38,7 @@ export interface GeminiStatsData {
   web_search_calls: number;
   fetch_url_calls: number;
   code_executions_server_side: number;
+  image_generations: number;
 }
 
 /** Stats data emitted via --stats. */
@@ -106,6 +107,7 @@ export function buildStats(
     web_search_calls?: number;
     fetch_url_calls?: number;
     code_executions_server_side?: number;
+    image_generations?: number;
   }
 ): StatsData {
   const stats: StatsData = {
@@ -131,11 +133,15 @@ export function buildStats(
   }
 
   // Include Gemini stats when any Gemini features were used
-  if (
+  const hasGeminiActivity =
     meta.thinking_level ||
     (meta.gemini_batteries_used && meta.gemini_batteries_used.length > 0) ||
-    (meta.thought_signatures_circulated && meta.thought_signatures_circulated > 0)
-  ) {
+    (meta.thought_signatures_circulated && meta.thought_signatures_circulated > 0) ||
+    (meta.web_search_calls && meta.web_search_calls > 0) ||
+    (meta.fetch_url_calls && meta.fetch_url_calls > 0) ||
+    (meta.code_executions_server_side && meta.code_executions_server_side > 0) ||
+    (meta.image_generations && meta.image_generations > 0);
+  if (hasGeminiActivity) {
     stats.gemini = {
       thinking_level: meta.thinking_level ?? null,
       gemini_batteries_used: meta.gemini_batteries_used ?? [],
@@ -143,6 +149,7 @@ export function buildStats(
       web_search_calls: meta.web_search_calls ?? 0,
       fetch_url_calls: meta.fetch_url_calls ?? 0,
       code_executions_server_side: meta.code_executions_server_side ?? 0,
+      image_generations: meta.image_generations ?? 0,
     };
   }
 

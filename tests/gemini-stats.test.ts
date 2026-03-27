@@ -69,6 +69,34 @@ describe("Gemini stats in buildStats", () => {
     assert.equal(stats.gemini.code_executions_server_side, 2);
   });
 
+  it("includes image generation count", () => {
+    const stats = buildStats(BASE_RESULT, {
+      time_ms: 1000,
+      thinking_level: "low",
+      image_generations: 3,
+    });
+    assert.ok(stats.gemini);
+    assert.equal(stats.gemini.image_generations, 3);
+  });
+
+  it("triggers gemini stats on web_search_calls alone", () => {
+    const stats = buildStats(BASE_RESULT, {
+      time_ms: 1000,
+      web_search_calls: 2,
+    });
+    assert.ok(stats.gemini);
+    assert.equal(stats.gemini.web_search_calls, 2);
+  });
+
+  it("triggers gemini stats on code_executions_server_side alone", () => {
+    const stats = buildStats(BASE_RESULT, {
+      time_ms: 1000,
+      code_executions_server_side: 1,
+    });
+    assert.ok(stats.gemini);
+    assert.equal(stats.gemini.code_executions_server_side, 1);
+  });
+
   it("includes both cache and gemini stats simultaneously", () => {
     const resultWithCache: RLMResult = {
       ...BASE_RESULT,
