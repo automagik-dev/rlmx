@@ -364,6 +364,7 @@ export async function rlmLoop(
       // Handle server-side code execution results from Gemini (GROUP 5)
       // These are executed by Gemini's code_execution tool and returned in the response
       if (response.codeExecutionResults && response.codeExecutionResults.length > 0) {
+        geminiCounts.codeExecutionsServerSide += response.codeExecutionResults.length;
         if (opts.verbose) {
           logVerbose(iteration, `received ${response.codeExecutionResults.length} server-side execution results`);
         }

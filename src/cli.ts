@@ -333,6 +333,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
       web_search_calls: result.geminiCounts?.webSearch,
       fetch_url_calls: result.geminiCounts?.fetchUrl,
       code_executions_server_side: result.geminiCounts?.codeExecutionsServerSide,
+      image_generations: result.geminiCounts?.generateImage,
     });
     // For JSON output, stats are included in the response
     if (opts.output === "json") {
