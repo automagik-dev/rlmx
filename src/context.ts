@@ -23,31 +23,36 @@ const DEFAULT_COLLECT_OPTIONS: CollectOptions = {
 };
 
 /**
- * Check if a name matches an exclude pattern.
- * Supports simple glob: if pattern contains `*`, convert to regex.
- * Otherwise, exact match on the name.
+ * Pre-compile exclude patterns into a test function.
+ * Glob patterns (containing `*`) are compiled to RegExp once;
+ * plain strings use exact match.
  */
-function matchesExclude(name: string, patterns: string[]): boolean {
-  for (const pattern of patterns) {
+function buildExcludeMatcher(patterns: string[]): (name: string) => boolean {
+  const matchers: Array<(name: string) => boolean> = patterns.map((pattern) => {
     if (pattern.includes("*")) {
-      // Convert glob pattern to regex: escape dots, replace * with .*
       const regexStr = "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$";
-      if (new RegExp(regexStr).test(name)) return true;
-    } else {
-      if (name === pattern) return true;
+      const re = new RegExp(regexStr);
+      return (name: string) => re.test(name);
     }
-  }
-  return false;
+    return (name: string) => name === pattern;
+  });
+  return (name: string) => matchers.some((m) => m(name));
 }
 
 /**
  * Recursively collect files matching a pattern from a directory.
+ * Accepts a pre-compiled exclude matcher and extension Set to avoid
+ * repeated RegExp/array allocations during traversal.
  */
 async function collectFiles(
   dir: string,
   baseDir: string,
-  options: CollectOptions
+  options: CollectOptions,
+  isExcluded?: (name: string) => boolean,
+  extSet?: Set<string>
 ): Promise<ContextItem[]> {
+  const excludeFn = isExcluded ?? buildExcludeMatcher(options.exclude);
+  const extensions = extSet ?? new Set(options.extensions);
   const items: ContextItem[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
 
@@ -55,27 +60,30 @@ async function collectFiles(
     const fullPath = join(dir, entry.name);
 
     // Resolve symlinks: isDirectory/isFile return false for symlinks
-    let isDir = entry.isDirectory();
-    let isFile = entry.isFile();
+    let isDir: boolean;
+    let isFile: boolean;
     if (entry.isSymbolicLink()) {
       const resolved = await stat(fullPath); // stat follows symlinks
       isDir = resolved.isDirectory();
       isFile = resolved.isFile();
+    } else {
+      isDir = entry.isDirectory();
+      isFile = entry.isFile();
     }
 
     if (isDir) {
       // Always skip hidden directories (starting with .)
       if (entry.name.startsWith(".")) continue;
       // Skip directories matching exclude patterns
-      if (matchesExclude(entry.name, options.exclude)) continue;
-      const subItems = await collectFiles(fullPath, baseDir, options);
+      if (excludeFn(entry.name)) continue;
+      const subItems = await collectFiles(fullPath, baseDir, options, excludeFn, extensions);
       items.push(...subItems);
     } else if (isFile) {
       // Skip files matching exclude patterns
-      if (matchesExclude(entry.name, options.exclude)) continue;
-      // Check if file matches any of the allowed extensions
-      const matchesExt = options.extensions.some((ext) => entry.name.endsWith(ext));
-      if (matchesExt) {
+      if (excludeFn(entry.name)) continue;
+      // Check if file matches any of the allowed extensions (O(1) Set lookup per extension suffix)
+      const dotIdx = entry.name.lastIndexOf(".");
+      if (dotIdx !== -1 && extensions.has(entry.name.slice(dotIdx))) {
         const content = await readFile(fullPath, "utf-8");
         items.push({
           path: relative(baseDir, fullPath),
@@ -100,8 +108,13 @@ function generateMetadata(ctx: LoadedContext): string {
 
   if (ctx.type === "list") {
     const items = ctx.content as ContextItem[];
-    const totalLength = items.reduce((sum, item) => sum + item.content.length, 0);
-    const chunkLengths = items.map((item) => item.content.length);
+    let totalLength = 0;
+    const chunkLengths: number[] = new Array(items.length);
+    for (let i = 0; i < items.length; i++) {
+      const len = items[i].content.length;
+      totalLength += len;
+      chunkLengths[i] = len;
+    }
 
     let chunkStr: string;
     if (chunkLengths.length > 100) {

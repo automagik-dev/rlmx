@@ -621,15 +621,13 @@ function buildResult(
 ): RLMResult {
   // Extract file references from the answer (paths like docs/foo/bar.md)
   const refRegex = /(?:^|[\s(["'])([a-zA-Z0-9_./-]+\.(?:md|txt|py|ts|js|json))/gm;
-  const references: string[] = [];
+  const refSet = new Set<string>();
   let match: RegExpExecArray | null;
 
   while ((match = refRegex.exec(answer)) !== null) {
-    const ref = match[1];
-    if (ref && !references.includes(ref)) {
-      references.push(ref);
-    }
+    if (match[1]) refSet.add(match[1]);
   }
+  const references = [...refSet];
 
   const result: RLMResult = {
     answer,
