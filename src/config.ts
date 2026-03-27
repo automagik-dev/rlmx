@@ -317,6 +317,16 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     cache.expireTime = cfg.cache["expire-time"];
   }
 
+  // Validate cache TTL
+  if (cache.ttl !== undefined) {
+    if (typeof cache.ttl !== "number" || cache.ttl < 0) {
+      throw new Error("cache.ttl must be a non-negative number (seconds).");
+    }
+  }
+  if (cache.expireTime !== undefined && typeof cache.expireTime !== "string") {
+    throw new Error("cache.expire-time must be an ISO 8601 datetime string.");
+  }
+
   // Parse gemini config
   const gemini: GeminiConfig = {
     thinkingLevel: cfg.gemini?.["thinking-level"] ?? DEFAULT_GEMINI_CONFIG.thinkingLevel,

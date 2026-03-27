@@ -41,6 +41,7 @@ Options:
   --ext <list>            File extensions for context dirs (comma-separated)
   --thinking <level>      Thinking level: minimal, low, medium, high (Gemini 3)
   --cache                 Enable cache mode (full context in system prompt for provider caching)
+  --ttl <seconds>         Cache TTL in seconds (overrides rlmx.yaml cache.ttl)
   --estimate              Show context size and cost estimate without caching (cache command)
   --parallel <n>          Concurrent questions for batch command (default: 1)
   --batch-api             Use Gemini Batch API for 50% cost reduction (batch command)
@@ -80,6 +81,7 @@ interface CliOptions {
   ext: string[] | null;
   thinking: ThinkingLevel | null;
   cache: boolean;
+  ttl: number | null;
   estimate: boolean;
   batchFile: string | null;
   parallel: number;
@@ -107,6 +109,7 @@ function parseCliArgs(args: string[]): CliOptions {
       ext: { type: "string" },
       thinking: { type: "string" },
       cache: { type: "boolean", default: false },
+      ttl: { type: "string" },
       estimate: { type: "boolean", default: false },
       parallel: { type: "string", default: "1" },
       "batch-api": { type: "boolean", default: false },
@@ -120,7 +123,7 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "help", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
+      maxDepth: null, ext: null, thinking: null, cache: false, ttl: null, estimate: false,
       batchFile: null, parallel: 1, batchApi: false,
     };
   }
@@ -130,7 +133,7 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "version", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
+      maxDepth: null, ext: null, thinking: null, cache: false, ttl: null, estimate: false,
       batchFile: null, parallel: 1, batchApi: false,
     };
   }
@@ -163,6 +166,18 @@ function parseCliArgs(args: string[]): CliOptions {
     process.exit(1);
   }
 
+  // Validate and parse --ttl
+  const ttlRaw = values.ttl as string | undefined;
+  let ttl: number | null = null;
+  if (ttlRaw !== undefined) {
+    const parsed = parseInt(ttlRaw, 10);
+    if (isNaN(parsed) || parsed < 0) {
+      console.error(`Error: --ttl must be a non-negative integer (seconds), got "${ttlRaw}"`);
+      process.exit(1);
+    }
+    ttl = parsed;
+  }
+
   // Parse --ext
   const extRaw = values.ext as string | undefined;
   const ext = extRaw
@@ -187,6 +202,7 @@ function parseCliArgs(args: string[]): CliOptions {
     ext,
     thinking: (thinkingRaw as ThinkingLevel) || null,
     cache: values.cache as boolean,
+    ttl,
     estimate: values.estimate as boolean,
     batchFile,
     parallel: parseInt(values.parallel as string, 10) || 1,
@@ -243,6 +259,9 @@ async function runQuery(opts: CliOptions): Promise<void> {
   }
   if (opts.cache) {
     config.cache.enabled = true;
+  }
+  if (opts.ttl !== null) {
+    config.cache.ttl = opts.ttl;
   }
   if (opts.tools) {
     config.toolsLevel = opts.tools;
@@ -373,6 +392,9 @@ async function runCache(opts: CliOptions): Promise<void> {
   // Apply CLI overrides
   if (opts.tools) {
     config.toolsLevel = opts.tools;
+  }
+  if (opts.ttl !== null) {
+    config.cache.ttl = opts.ttl;
   }
 
   const provider = config.model.provider;

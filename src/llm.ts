@@ -65,6 +65,8 @@ export interface CacheLLMConfig {
   enabled: boolean;
   retention: "short" | "long";
   sessionId: string;
+  ttl?: number;        // seconds
+  expireTime?: string;  // ISO 8601
 }
 
 /** Code execution result from Gemini (GROUP 5). */
@@ -178,12 +180,15 @@ export async function llmComplete(
     piOptions.reasoning = options.thinkingLevel;
   }
 
-  // Build onPayload hook for Gemini-specific features (media resolution, structured outputs, tools, etc.)
-  if (isGoogleProvider(modelConfig.provider) && options?.geminiConfig) {
+  // Build onPayload hook for Gemini-specific features (media resolution, structured outputs, tools, cache TTL, etc.)
+  if (isGoogleProvider(modelConfig.provider) && (options?.geminiConfig || options?.cacheConfig)) {
+    const geminiCfg = options?.geminiConfig ?? { thinkingLevel: null, googleSearch: false, urlContext: false, codeExecution: false, mediaResolution: null, computerUse: false, mapsGrounding: false, fileSearch: false };
     const onPayload = buildGeminiOnPayload(
-      options.geminiConfig,
+      geminiCfg,
       modelConfig.provider,
-      options?.outputSchema
+      options?.outputSchema,
+      options?.cacheConfig?.ttl,
+      options?.cacheConfig?.expireTime
     );
     if (onPayload) {
       piOptions.onPayload = onPayload;

@@ -81,11 +81,20 @@ function mapMediaResolution(
 export function buildGeminiOnPayload(
   gemini: GeminiConfig,
   provider: string,
-  outputSchema?: Record<string, unknown> | null
+  outputSchema?: Record<string, unknown> | null,
+  cacheTtl?: number,
+  cacheExpireTime?: string
 ): ((payload: unknown) => unknown | undefined) | undefined {
   // No hook needed for non-Google providers
   if (!isGoogleProvider(provider)) {
     return undefined;
+  }
+
+  // Validate Google TTL range (60-86400 seconds)
+  if (cacheTtl !== undefined && (cacheTtl < 60 || cacheTtl > 86400)) {
+    console.error(
+      `rlmx: warning: Google cache TTL must be 60-86400 seconds, got ${cacheTtl}s`
+    );
   }
 
   // Collect all modifications needed
@@ -94,7 +103,9 @@ export function buildGeminiOnPayload(
     gemini.urlContext ||
     gemini.codeExecution ||
     (gemini.mediaResolution !== null && gemini.mediaResolution !== undefined) ||
-    outputSchema;
+    outputSchema ||
+    cacheTtl !== undefined ||
+    cacheExpireTime !== undefined;
 
   if (!hasModifications) {
     return undefined;
@@ -148,6 +159,18 @@ export function buildGeminiOnPayload(
     if (outputSchema) {
       config.responseMimeType = "application/json";
       config.responseSchema = outputSchema;
+    }
+
+    // Inject cache TTL into cachedContent (Google Duration format: "3600s")
+    if (cacheTtl !== undefined || cacheExpireTime !== undefined) {
+      const cachedContent = ((config.cachedContent as Record<string, unknown>) ?? {});
+      if (cacheTtl !== undefined) {
+        cachedContent.ttl = cacheTtl + "s";
+      }
+      if (cacheExpireTime !== undefined) {
+        cachedContent.expireTime = cacheExpireTime;
+      }
+      config.cachedContent = cachedContent;
     }
 
     p.config = config;

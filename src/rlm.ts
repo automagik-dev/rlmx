@@ -190,6 +190,8 @@ export async function rlmLoop(
       enabled: true,
       retention: config.cache.retention,
       sessionId,
+      ttl: config.cache.ttl,
+      expireTime: config.cache.expireTime,
     };
 
     // Emit cache_init log event
