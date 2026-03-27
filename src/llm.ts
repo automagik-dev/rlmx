@@ -8,7 +8,7 @@
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
 import type { Message, UserMessage, AssistantMessage as PiAssistantMessage, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { spawn } from "node:child_process";
-import type { RlmxConfig, ModelConfig } from "./config.js";
+import type { RlmxConfig, ModelConfig, GeminiConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
 import type { Logger } from "./logger.js";
 import { buildGeminiOnPayload, isGoogleProvider, type ThinkingLevel } from "./gemini.js";
@@ -59,6 +59,8 @@ export interface LLMResponse {
   usage: UsageStats;
   /** Original pi/ai AssistantMessage for multi-turn conversation fidelity. */
   piMessage?: PiAssistantMessage;
+  /** Count of thought signatures in response (GROUP 2: multi-turn quality tracking). */
+  thoughtSignatureCount?: number;
 }
 
 /**
@@ -97,6 +99,7 @@ export async function llmComplete(
     cacheConfig?: CacheLLMConfig;
     thinkingLevel?: ThinkingLevel | null;
     outputSchema?: Record<string, unknown> | null;
+    geminiConfig?: GeminiConfig;
   }
 ): Promise<LLMResponse> {
   const model = resolveModel(modelConfig.provider, modelConfig.model);
@@ -152,19 +155,10 @@ export async function llmComplete(
     piOptions.reasoning = options.thinkingLevel;
   }
 
-  // Build onPayload hook for Gemini-specific features (media resolution, structured outputs, etc.)
-  if (isGoogleProvider(modelConfig.provider)) {
+  // Build onPayload hook for Gemini-specific features (media resolution, structured outputs, tools, etc.)
+  if (isGoogleProvider(modelConfig.provider) && options?.geminiConfig) {
     const onPayload = buildGeminiOnPayload(
-      {
-        thinkingLevel: options?.thinkingLevel ?? null,
-        googleSearch: false,
-        urlContext: false,
-        codeExecution: false,
-        mediaResolution: null,
-        computerUse: false,
-        mapsGrounding: false,
-        fileSearch: false,
-      },
+      options.geminiConfig,
       modelConfig.provider,
       options?.outputSchema
     );
@@ -194,6 +188,13 @@ export async function llmComplete(
     .map((block: any) => block.text)
     .join("");
 
+  // Count thought signatures in response for GROUP 2 verification
+  // These signatures enable multi-turn quality by circulating reasoning context
+  const thoughtSignatureCount = (response.content ?? []).reduce((count: number, block: any) => {
+    if (block.thinkingSignature || block.textSignature) count++;
+    return count;
+  }, 0);
+
   // Emit to logger if provided
   if (options?.logger) {
     options.logger.llmCall({
@@ -216,6 +217,7 @@ export async function llmComplete(
       llmCalls: 1,
     },
     piMessage: response,
+    thoughtSignatureCount,
   };
 }
 
