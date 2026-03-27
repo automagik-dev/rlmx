@@ -453,6 +453,22 @@ export async function rlmLoop(
         });
       }
 
+      // Soft iteration limit: nudge LLM to wrap up when approaching max
+      const remaining = opts.maxIterations - iteration - 1;
+      if (opts.maxIterations >= 5 && remaining <= 2 && remaining > 0) {
+        if (opts.verbose) {
+          logVerbose(iteration, `soft limit: ${remaining} iteration(s) remaining, nudging LLM to wrap up`);
+        }
+        const nudge = remaining === 2
+          ? "\n\nNote: You have 2 iterations remaining. Start wrapping up your analysis and prepare your final answer."
+          : "\n\nNote: This is your LAST iteration. Provide your final answer NOW using FINAL().";
+        // Append nudge to the last user message
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg.role === "user") {
+          lastMsg.content += nudge;
+        }
+      }
+
       // Emit stream event if in stream mode
       if (opts.output === "stream") {
         emitStreamEvent({
