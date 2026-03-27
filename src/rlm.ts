@@ -236,6 +236,13 @@ export async function rlmLoop(
       );
     });
 
+    /** Cleanup timeout/REPL and build the final result. */
+    const finalize = async (answer: string, iterations: number): Promise<RLMResult> => {
+      clearTimeout(timeoutHandle);
+      await repl.stop();
+      return buildResult(answer, usage, iterations, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
+    };
+
     // Build initial message history
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
@@ -295,37 +302,22 @@ export async function rlmLoop(
 
       // In structured output mode, treat the API response as the final answer (schema-enforced JSON)
       if (isStructuredOutputMode(config) && codeBlocks.length === 0) {
-        clearTimeout(timeoutHandle);
-        await repl.stop();
         if (opts.verbose) {
           logVerbose(iteration, "structured output mode: response is final answer");
         }
-        return buildResult(responseText, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
+        return finalize(responseText, iteration + 1);
       }
 
       // Check for FINAL signal in the text (outside code blocks)
       const finalSignal = detectFinal(responseText, codeBlocks);
 
       if (finalSignal && codeBlocks.length === 0) {
-        // FINAL without code blocks — direct answer
-        clearTimeout(timeoutHandle);
-
         if (finalSignal.type === "final") {
-          await repl.stop();
-          return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
+          return finalize(finalSignal.value, iteration + 1);
         }
         // FINAL_VAR without code — get variable value before stopping REPL
         const varResult = await getVariableFromRepl(repl, finalSignal.value);
-        await repl.stop();
-        return buildResult(
-          varResult ?? finalSignal.value,
-          usage,
-          iteration + 1,
-          config,
-          budget.getState().budgetHit,
-          geminiCounts,
-          repl.getGeminiBatteriesUsed()
-        );
+        return finalize(varResult ?? finalSignal.value, iteration + 1);
       }
 
       // Execute code blocks in REPL
@@ -346,20 +338,8 @@ export async function rlmLoop(
           error: execResult.error,
         });
 
-        // Check if this execution produced a FINAL signal
         if (execResult.final) {
-          clearTimeout(timeoutHandle);
-          await repl.stop();
-
-          return buildResult(
-            execResult.final.value,
-            usage,
-            iteration + 1,
-            config,
-            budget.getState().budgetHit,
-            geminiCounts,
-            repl.getGeminiBatteriesUsed()
-          );
+          return finalize(execResult.final.value, iteration + 1);
         }
       }
 
@@ -383,49 +363,24 @@ export async function rlmLoop(
         }
       }
 
-      // Check for FINAL_VAR in text after code execution
-      if (finalSignal && finalSignal.type === "final_var") {
-        // The variable should now exist in the REPL after code execution
+      // Handle FINAL signal detected in text, after code execution
+      if (finalSignal) {
+        if (finalSignal.type === "final") {
+          return finalize(finalSignal.value, iteration + 1);
+        }
+        // FINAL_VAR — variable should now exist after code execution
         const varExec = await repl.execute(
           `__final_val = str(${finalSignal.value}) if '${finalSignal.value}' in dir() else "Variable '${finalSignal.value}' not found"`
         );
         if (varExec.final) {
-          clearTimeout(timeoutHandle);
-          await repl.stop();
-          return buildResult(
-            varExec.final.value,
-            usage,
-            iteration + 1,
-            config,
-            budget.getState().budgetHit,
-            geminiCounts,
-            repl.getGeminiBatteriesUsed()
-          );
+          return finalize(varExec.final.value, iteration + 1);
         }
-        // Try getting variable directly
         const getResult = await repl.execute(
           `FINAL_VAR("${finalSignal.value}")`
         );
         if (getResult.final) {
-          clearTimeout(timeoutHandle);
-          await repl.stop();
-          return buildResult(
-            getResult.final.value,
-            usage,
-            iteration + 1,
-            config,
-            budget.getState().budgetHit,
-            geminiCounts,
-            repl.getGeminiBatteriesUsed()
-          );
+          return finalize(getResult.final.value, iteration + 1);
         }
-      }
-
-      // Also check for FINAL in the text portion after code
-      if (finalSignal && finalSignal.type === "final") {
-        clearTimeout(timeoutHandle);
-        await repl.stop();
-        return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
       }
 
       // Format execution results and append to history
@@ -463,11 +418,6 @@ export async function rlmLoop(
         });
       }
 
-      // Update user prompt for next iteration
-      if (iteration + 1 < opts.maxIterations) {
-        // For iteration > 0, the user prompt is the continuation
-        // (already handled by the execution result above)
-      }
     }
 
     // Loop exited — force a final answer
@@ -477,18 +427,7 @@ export async function rlmLoop(
     }
 
     const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal, cacheConfig);
-    clearTimeout(timeoutHandle);
-    await repl.stop();
-
-    return buildResult(
-      forcedResult,
-      usage,
-      actualIterations,
-      config,
-      budget.getState().budgetHit,
-      geminiCounts,
-      repl.getGeminiBatteriesUsed()
-    );
+    return finalize(forcedResult, actualIterations);
   } catch (err: any) {
     clearTimeout(timeoutHandle);
     await repl.stop().catch(() => {});
