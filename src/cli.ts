@@ -278,7 +278,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
   if (opts.context) {
     const contextPath = resolve(opts.context);
     const contextOpts = opts.ext
-      ? { extensions: opts.ext }
+      ? { extensions: opts.ext, exclude: config.contextConfig?.exclude }
       : config.contextConfig
         ? { extensions: config.contextConfig.extensions, exclude: config.contextConfig.exclude }
         : undefined;
@@ -380,7 +380,11 @@ async function runCache(opts: CliOptions): Promise<void> {
 
   // Load context
   const contextPath = resolve(opts.context);
-  const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+  const contextOpts = opts.ext
+    ? { extensions: opts.ext, exclude: config.contextConfig?.exclude }
+    : config.contextConfig
+      ? { extensions: config.contextConfig.extensions, exclude: config.contextConfig.exclude }
+      : undefined;
   const context = await loadContext(contextPath, contextOpts);
 
   // Validate context size
@@ -469,7 +473,11 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
   let context = null;
   if (opts.context) {
     const contextPath = resolve(opts.context);
-    const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+    const contextOpts = opts.ext
+      ? { extensions: opts.ext, exclude: config.contextConfig?.exclude }
+      : config.contextConfig
+        ? { extensions: config.contextConfig.extensions, exclude: config.contextConfig.exclude }
+        : undefined;
     context = await loadContext(contextPath, contextOpts);
     if (opts.verbose) {
       console.error(`rlmx batch: loaded context — ${context.metadata}`);
