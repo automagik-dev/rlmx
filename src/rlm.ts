@@ -218,6 +218,8 @@ export async function rlmLoop(
     await repl.start({
       context: replContext as any,
       tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
+      loadGeminiBatteries: isGoogleProvider(config.model.provider) && (config.toolsLevel === "standard" || config.toolsLevel === "full"),
+      toolsLevel: config.toolsLevel,
     });
 
     // Set up LLM request handler for REPL IPC
@@ -487,6 +489,7 @@ async function forceFinalAnswer(
     cacheConfig,
     thinkingLevel: config.gemini.thinkingLevel as any,
     outputSchema: config.output.schema,
+    geminiConfig: config.gemini,
   });
   mergeUsage(usage, response.usage);
   return response.text;

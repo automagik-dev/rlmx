@@ -40,6 +40,8 @@ function makeConfig(overrides: Partial<RlmxConfig> = {}): RlmxConfig {
     toolsLevel: overrides.toolsLevel ?? "core",
     cache: overrides.cache ?? { enabled: true, strategy: "full", retention: "long" },
     configSource: overrides.configSource ?? "yaml",
+    gemini: overrides.gemini ?? { thinkingLevel: null, googleSearch: false, urlContext: false, codeExecution: false, computerUse: false, mapsGrounding: false, fileSearch: false, mediaResolution: null },
+    output: overrides.output ?? { schema: null },
   };
 }
 
