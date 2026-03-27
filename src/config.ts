@@ -40,6 +40,30 @@ export interface ContextConfig {
   exclude: string[];
 }
 
+/** Media resolution configuration per content type */
+export interface MediaResolutionConfig {
+  images?: string;
+  pdfs?: string;
+  video?: string;
+}
+
+/** Gemini-specific configuration */
+export interface GeminiConfig {
+  thinkingLevel: string | null;
+  googleSearch: boolean;
+  urlContext: boolean;
+  codeExecution: boolean;
+  mediaResolution: MediaResolutionConfig | null;
+  computerUse: boolean;
+  mapsGrounding: boolean;
+  fileSearch: boolean;
+}
+
+/** Structured output schema configuration */
+export interface OutputConfig {
+  schema: Record<string, unknown> | null;
+}
+
 /** Tool level — controls which functions are available in the REPL */
 export type ToolsLevel = "core" | "standard" | "full";
 
@@ -59,6 +83,10 @@ export interface RlmxConfig {
   toolsLevel: ToolsLevel;
   /** Cache configuration for CAG mode */
   cache: CacheConfig;
+  /** Gemini-specific configuration */
+  gemini: GeminiConfig;
+  /** Structured output configuration */
+  output: OutputConfig;
   /** Config source: "yaml" | "md" | "defaults" */
   configSource: "yaml" | "md" | "defaults";
 }
@@ -87,6 +115,21 @@ const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   exclude: ["node_modules", ".git", "dist"],
 };
 
+const DEFAULT_GEMINI_CONFIG: GeminiConfig = {
+  thinkingLevel: null,
+  googleSearch: false,
+  urlContext: false,
+  codeExecution: false,
+  mediaResolution: null,
+  computerUse: false,
+  mapsGrounding: false,
+  fileSearch: false,
+};
+
+const DEFAULT_OUTPUT_CONFIG: OutputConfig = {
+  schema: null,
+};
+
 // ─── YAML Schema ─────────────────────────────────────────
 
 /** Shape of rlmx.yaml on disk */
@@ -109,6 +152,23 @@ interface RawYamlConfig {
     "max-depth"?: number | null;
   };
   "tools-level"?: string;
+  gemini?: {
+    "thinking-level"?: string;
+    "google-search"?: boolean;
+    "url-context"?: boolean;
+    "code-execution"?: boolean;
+    "media-resolution"?: {
+      images?: string;
+      pdfs?: string;
+      video?: string;
+    };
+    "computer-use"?: boolean;
+    "maps-grounding"?: boolean;
+    "file-search"?: boolean;
+  };
+  output?: {
+    schema?: Record<string, unknown>;
+  };
   cache?: {
     enabled?: boolean;
     strategy?: string;
@@ -257,6 +317,54 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     cache.expireTime = cfg.cache["expire-time"];
   }
 
+  // Parse gemini config
+  const gemini: GeminiConfig = {
+    thinkingLevel: cfg.gemini?.["thinking-level"] ?? DEFAULT_GEMINI_CONFIG.thinkingLevel,
+    googleSearch: cfg.gemini?.["google-search"] ?? DEFAULT_GEMINI_CONFIG.googleSearch,
+    urlContext: cfg.gemini?.["url-context"] ?? DEFAULT_GEMINI_CONFIG.urlContext,
+    codeExecution: cfg.gemini?.["code-execution"] ?? DEFAULT_GEMINI_CONFIG.codeExecution,
+    mediaResolution: cfg.gemini?.["media-resolution"] ?? DEFAULT_GEMINI_CONFIG.mediaResolution,
+    computerUse: cfg.gemini?.["computer-use"] ?? DEFAULT_GEMINI_CONFIG.computerUse,
+    mapsGrounding: cfg.gemini?.["maps-grounding"] ?? DEFAULT_GEMINI_CONFIG.mapsGrounding,
+    fileSearch: cfg.gemini?.["file-search"] ?? DEFAULT_GEMINI_CONFIG.fileSearch,
+  };
+
+  // Validate thinking level if provided
+  if (gemini.thinkingLevel !== null) {
+    const validLevels = ["minimal", "low", "medium", "high"];
+    if (!validLevels.includes(gemini.thinkingLevel)) {
+      throw new Error(
+        `Invalid gemini.thinking-level "${gemini.thinkingLevel}" in rlmx.yaml. ` +
+        `Must be one of: minimal, low, medium, high.`
+      );
+    }
+  }
+
+  // Validate media resolution values if provided
+  if (gemini.mediaResolution) {
+    const validResolutions = ["low", "medium", "high", "auto"];
+    for (const [key, value] of Object.entries(gemini.mediaResolution)) {
+      if (value && !validResolutions.includes(value)) {
+        throw new Error(
+          `Invalid gemini.media-resolution.${key} "${value}" in rlmx.yaml. ` +
+          `Must be one of: low, medium, high, auto.`
+        );
+      }
+    }
+  }
+
+  // Parse output config
+  const output: OutputConfig = {
+    schema: cfg.output?.schema ?? DEFAULT_OUTPUT_CONFIG.schema,
+  };
+
+  // Validate output schema if provided
+  if (output.schema !== null && typeof output.schema !== "object") {
+    throw new Error(
+      `Invalid output.schema in rlmx.yaml: must be a JSON Schema object or null.`
+    );
+  }
+
   return {
     system,
     tools,
@@ -267,6 +375,8 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     contextConfig,
     toolsLevel,
     cache,
+    gemini,
+    output,
     configSource: "yaml",
   };
 }
@@ -381,6 +491,8 @@ async function loadConfigFromMd(dir: string): Promise<RlmxConfig> {
     contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
     toolsLevel: "core",
     cache: { ...DEFAULT_CACHE_CONFIG },
+    gemini: { ...DEFAULT_GEMINI_CONFIG },
+    output: { ...DEFAULT_OUTPUT_CONFIG },
     configSource: "md",
   };
 }
@@ -399,6 +511,8 @@ function defaultConfig(dir: string): RlmxConfig {
     contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
     toolsLevel: "core",
     cache: { ...DEFAULT_CACHE_CONFIG },
+    gemini: { ...DEFAULT_GEMINI_CONFIG },
+    output: { ...DEFAULT_OUTPUT_CONFIG },
     configSource: "defaults",
   };
 }

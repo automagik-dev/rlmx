@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { loadConfig, type ToolsLevel } from "./config.js";
+import { isValidThinkingLevel, checkFutureFlags, type ThinkingLevel } from "./gemini.js";
 import { scaffold, needsScaffold } from "./scaffold.js";
 import { loadContext, loadContextFromStdin } from "./context.js";
 import { rlmLoop } from "./rlm.js";
@@ -38,9 +39,11 @@ Options:
   --max-tokens <n>        Maximum total tokens per run
   --max-depth <n>         Maximum recursive rlm_query depth
   --ext <list>            File extensions for context dirs (comma-separated)
+  --thinking <level>      Thinking level: minimal, low, medium, high (Gemini 3)
   --cache                 Enable cache mode (full context in system prompt for provider caching)
   --estimate              Show context size and cost estimate without caching (cache command)
   --parallel <n>          Concurrent questions for batch command (default: 1)
+  --batch-api             Use Gemini Batch API for 50% cost reduction (batch command)
 
 Config:
   rlmx.yaml               Single config file (run "rlmx init" to create)
@@ -75,10 +78,12 @@ interface CliOptions {
   maxTokens: number | null;
   maxDepth: number | null;
   ext: string[] | null;
+  thinking: ThinkingLevel | null;
   cache: boolean;
   estimate: boolean;
   batchFile: string | null;
   parallel: number;
+  batchApi: boolean;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -100,9 +105,11 @@ function parseCliArgs(args: string[]): CliOptions {
       "max-tokens": { type: "string" },
       "max-depth": { type: "string" },
       ext: { type: "string" },
+      thinking: { type: "string" },
       cache: { type: "boolean", default: false },
       estimate: { type: "boolean", default: false },
       parallel: { type: "string", default: "1" },
+      "batch-api": { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -113,8 +120,8 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "help", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1,
+      maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
+      batchFile: null, parallel: 1, batchApi: false,
     };
   }
 
@@ -123,8 +130,8 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "version", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1,
+      maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
+      batchFile: null, parallel: 1, batchApi: false,
     };
   }
 
@@ -146,6 +153,13 @@ function parseCliArgs(args: string[]): CliOptions {
   const toolsRaw = values.tools as string | undefined;
   if (toolsRaw && !["core", "standard", "full"].includes(toolsRaw)) {
     console.error(`Error: --tools must be core, standard, or full (got "${toolsRaw}")`);
+    process.exit(1);
+  }
+
+  // Validate --thinking
+  const thinkingRaw = values.thinking as string | undefined;
+  if (thinkingRaw && !isValidThinkingLevel(thinkingRaw)) {
+    console.error(`Error: --thinking must be minimal, low, medium, or high (got "${thinkingRaw}")`);
     process.exit(1);
   }
 
@@ -171,10 +185,12 @@ function parseCliArgs(args: string[]): CliOptions {
     maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"] as string, 10) : null,
     maxDepth: values["max-depth"] ? parseInt(values["max-depth"] as string, 10) : null,
     ext,
+    thinking: (thinkingRaw as ThinkingLevel) || null,
     cache: values.cache as boolean,
     estimate: values.estimate as boolean,
     batchFile,
     parallel: parseInt(values.parallel as string, 10) || 1,
+    batchApi: values["batch-api"] as boolean,
   };
 }
 
@@ -222,12 +238,22 @@ async function runQuery(opts: CliOptions): Promise<void> {
   const config = await loadConfig(configDir);
 
   // Apply CLI overrides to config
+  if (opts.thinking) {
+    config.gemini.thinkingLevel = opts.thinking;
+  }
   if (opts.cache) {
     config.cache.enabled = true;
   }
   if (opts.tools) {
     config.toolsLevel = opts.tools;
   }
+
+  // Warn about future flags
+  const futureWarnings = checkFutureFlags(config.gemini);
+  for (const w of futureWarnings) {
+    console.error(`rlmx: ${w}`);
+  }
+
   if (opts.maxCost !== null) {
     config.budget.maxCost = opts.maxCost;
   }
@@ -301,6 +327,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
       budget_hit: result.budgetHit,
       run_id: logger.runId,
       cache_enabled: opts.cache,
+      thinking_level: config.gemini.thinkingLevel ?? undefined,
     });
     // For JSON output, stats are included in the response
     if (opts.output === "json") {

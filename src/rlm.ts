@@ -252,6 +252,8 @@ export async function rlmLoop(
       const response = await llmComplete(messages, config.model, {
         signal: abortController.signal,
         cacheConfig,
+        thinkingLevel: config.gemini.thinkingLevel as any,
+        outputSchema: config.output.schema,
       });
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
@@ -460,7 +462,12 @@ async function forceFinalAnswer(
     },
   ];
 
-  const response = await llmComplete(forceMessages, config.model, { signal, cacheConfig });
+  const response = await llmComplete(forceMessages, config.model, {
+    signal,
+    cacheConfig,
+    thinkingLevel: config.gemini.thinkingLevel as any,
+    outputSchema: config.output.schema,
+  });
   mergeUsage(usage, response.usage);
   return response.text;
 }

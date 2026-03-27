@@ -6,11 +6,12 @@
  */
 
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
-import type { Message, UserMessage, AssistantMessage as PiAssistantMessage } from "@mariozechner/pi-ai";
+import type { Message, UserMessage, AssistantMessage as PiAssistantMessage, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { spawn } from "node:child_process";
 import type { RlmxConfig, ModelConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
 import type { Logger } from "./logger.js";
+import { buildGeminiOnPayload, isGoogleProvider, type ThinkingLevel } from "./gemini.js";
 
 /** Token usage tracking. */
 export interface UsageStats {
@@ -88,7 +89,15 @@ function resolveModel(provider: string, modelId: string) {
 export async function llmComplete(
   messages: ChatMessage[],
   modelConfig: ModelConfig,
-  options?: { maxTokens?: number; signal?: AbortSignal; logger?: Logger; iteration?: number; cacheConfig?: CacheLLMConfig }
+  options?: {
+    maxTokens?: number;
+    signal?: AbortSignal;
+    logger?: Logger;
+    iteration?: number;
+    cacheConfig?: CacheLLMConfig;
+    thinkingLevel?: ThinkingLevel | null;
+    outputSchema?: Record<string, unknown> | null;
+  }
 ): Promise<LLMResponse> {
   const model = resolveModel(modelConfig.provider, modelConfig.model);
   const startTime = Date.now();
@@ -131,17 +140,46 @@ export async function llmComplete(
       }
     : {};
 
+  // Build pi/ai options with thinking level and onPayload hook
+  const piOptions: SimpleStreamOptions = {
+    maxTokens: options?.maxTokens ?? 16384,
+    signal: options?.signal,
+    ...cacheOpts,
+  };
+
+  // Add thinking level for Gemini
+  if (options?.thinkingLevel) {
+    piOptions.reasoning = options.thinkingLevel;
+  }
+
+  // Build onPayload hook for Gemini-specific features (media resolution, structured outputs, etc.)
+  if (isGoogleProvider(modelConfig.provider)) {
+    const onPayload = buildGeminiOnPayload(
+      {
+        thinkingLevel: options?.thinkingLevel ?? null,
+        googleSearch: false,
+        urlContext: false,
+        codeExecution: false,
+        mediaResolution: null,
+        computerUse: false,
+        mapsGrounding: false,
+        fileSearch: false,
+      },
+      modelConfig.provider,
+      options?.outputSchema
+    );
+    if (onPayload) {
+      piOptions.onPayload = onPayload;
+    }
+  }
+
   const response = await completeSimple(
     model,
     {
       systemPrompt,
       messages: piMessages,
     },
-    {
-      maxTokens: options?.maxTokens ?? 16384,
-      signal: options?.signal,
-      ...cacheOpts,
-    }
+    piOptions
   );
 
   const timeMs = Date.now() - startTime;
