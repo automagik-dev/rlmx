@@ -119,6 +119,9 @@ tools:
         return summary
 
 criteria: |
+  IMPORTANT: Always use print() to see the output of tool calls in the REPL.
+  Example: print(show_file("config.ts")) — NOT just show_file("config.ts").
+  The REPL captures stdout only, not return values.
   When showing file contents: return EXACT text, no summarization.
   When finding references: return ALL matches with file:line format.
   When explaining code: cite specific file paths and line numbers.
