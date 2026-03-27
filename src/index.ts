@@ -18,6 +18,9 @@ export type { BudgetState } from "./budget.js";
 export { rlmLoop } from "./rlm.js";
 export type { RLMOptions } from "./rlm.js";
 
+export { runBatch } from "./batch.js";
+export type { BatchOptions } from "./batch.js";
+
 export {
   llmComplete,
   llmCompleteSimple,
@@ -26,7 +29,7 @@ export {
   createUsage,
   mergeUsage,
 } from "./llm.js";
-export type { ChatMessage, LLMResponse, UsageStats } from "./llm.js";
+export type { ChatMessage, LLMResponse, UsageStats, CacheLLMConfig } from "./llm.js";
 
 export {
   extractCodeBlocks,

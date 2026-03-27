@@ -11,6 +11,7 @@
 
 import type { RlmxConfig, ToolDef } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
+import { buildCachedSystemPrompt, computeContentHash, buildSessionId, estimateTokens } from "./cache.js";
 import { REPL } from "./repl.js";
 import {
   llmComplete,
@@ -19,6 +20,7 @@ import {
   mergeUsage,
   type ChatMessage,
   type UsageStats,
+  type CacheLLMConfig,
 } from "./llm.js";
 import {
   extractCodeBlocks,
@@ -28,6 +30,7 @@ import {
 } from "./parser.js";
 import { emitStreamEvent, logVerbose, type RLMResult } from "./output.js";
 import { BudgetTracker } from "./budget.js";
+import type { Logger } from "./logger.js";
 
 /** Options for the RLM loop. */
 export interface RLMOptions {
@@ -35,6 +38,8 @@ export interface RLMOptions {
   timeout: number;
   verbose: boolean;
   output: "text" | "json" | "stream";
+  cache: boolean;
+  logger?: Logger;
 }
 
 const DEFAULT_OPTIONS: RLMOptions = {
@@ -42,6 +47,7 @@ const DEFAULT_OPTIONS: RLMOptions = {
   timeout: 300_000,
   verbose: false,
   output: "text",
+  cache: false,
 };
 
 /**
@@ -157,9 +163,32 @@ export async function rlmLoop(
   const usage = createUsage();
   const budget = new BudgetTracker(config.budget);
 
-  // Build system prompt
-  const systemPrompt = buildSystemPrompt(config, context);
+  // Build system prompt — cache mode embeds full context, normal mode uses metadata only
+  const systemPrompt = opts.cache
+    ? buildCachedSystemPrompt(config, context)
+    : buildSystemPrompt(config, context);
   const contextMetadata = buildContextMetadata(context);
+
+  // Build cache config for LLM calls (passed through to pi/ai completeSimple)
+  let cacheConfig: CacheLLMConfig | undefined;
+  if (opts.cache && context) {
+    const contentHash = computeContentHash(context);
+    const sessionId = buildSessionId(config.cache.sessionPrefix, contentHash);
+    cacheConfig = {
+      enabled: true,
+      retention: config.cache.retention,
+      sessionId,
+    };
+
+    // Emit cache_init log event
+    if (opts.logger) {
+      opts.logger.cacheInit({
+        contentHash,
+        sessionId,
+        estimatedTokens: estimateTokens(context),
+      });
+    }
+  }
 
   // Prepare abort controller for timeout
   const abortController = new AbortController();
@@ -222,6 +251,7 @@ export async function rlmLoop(
       // Call LLM
       const response = await llmComplete(messages, config.model, {
         signal: abortController.signal,
+        cacheConfig,
       });
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
@@ -382,7 +412,7 @@ export async function rlmLoop(
       logVerbose(opts.maxIterations, "max iterations reached, forcing final answer");
     }
 
-    const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal);
+    const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal, cacheConfig);
     clearTimeout(timeoutHandle);
     await repl.stop();
 
@@ -418,7 +448,8 @@ async function forceFinalAnswer(
   messages: ChatMessage[],
   config: RlmxConfig,
   usage: UsageStats,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cacheConfig?: CacheLLMConfig
 ): Promise<string> {
   const forceMessages: ChatMessage[] = [
     ...messages,
@@ -429,7 +460,7 @@ async function forceFinalAnswer(
     },
   ];
 
-  const response = await llmComplete(forceMessages, config.model, { signal });
+  const response = await llmComplete(forceMessages, config.model, { signal, cacheConfig });
   mergeUsage(usage, response.usage);
   return response.text;
 }
