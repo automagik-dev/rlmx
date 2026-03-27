@@ -7,6 +7,10 @@
 
 const MAX_FORMATTED_OUTPUT = 20_000;
 
+// Pre-compiled regexes for FINAL signal detection (used every RLM iteration)
+const FINAL_VAR_REGEX = /^\s*FINAL_VAR\((.*?)\)/m;
+const FINAL_REGEX = /^\s*FINAL\((.*)\)\s*$/m;
+
 /** A code block extracted from an LLM response. */
 export interface CodeBlock {
   code: string;
@@ -55,16 +59,14 @@ export function detectFinal(text: string, codeBlocks: CodeBlock[]): FinalSignal 
   const outsideText = getTextOutsideBlocks(text, codeBlocks);
 
   // Check FINAL_VAR first (higher priority)
-  const finalVarRegex = /^\s*FINAL_VAR\((.*?)\)/m;
-  const finalVarMatch = finalVarRegex.exec(outsideText);
+  const finalVarMatch = FINAL_VAR_REGEX.exec(outsideText);
   if (finalVarMatch) {
     const varName = finalVarMatch[1].trim().replace(/^["']|["']$/g, "");
     return { type: "final_var", value: varName };
   }
 
   // Check FINAL
-  const finalRegex = /^\s*FINAL\((.*)\)\s*$/m;
-  const finalMatch = finalRegex.exec(outsideText);
+  const finalMatch = FINAL_REGEX.exec(outsideText);
   if (finalMatch) {
     return { type: "final", value: finalMatch[1] };
   }

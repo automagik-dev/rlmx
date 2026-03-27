@@ -206,30 +206,27 @@ export async function llmComplete(
   const cacheWriteTokens = response.usage?.cacheWrite ?? 0;
   const cost = (response.usage as any)?.cost?.total ?? 0;
 
-  const text = response.content
-    .filter((block: any) => block.type === "text")
-    .map((block: any) => block.text)
-    .join("");
-
-  // Count thought signatures in response for GROUP 2 verification
-  // These signatures enable multi-turn quality by circulating reasoning context
-  const thoughtSignatureCount = (response.content ?? []).reduce((count: number, block: any) => {
-    if (block.thinkingSignature || block.textSignature) count++;
-    return count;
-  }, 0);
-
-  // Extract code execution results from Gemini (GROUP 5)
-  // When codeExecution tool is enabled, Gemini returns executionResult blocks
+  // Single pass: extract text, count thought signatures, collect code execution results
+  const textParts: string[] = [];
+  let thoughtSignatureCount = 0;
   const codeExecutionResults: CodeExecutionResult[] = [];
   for (const block of response.content ?? []) {
-    if ((block as any).type === "executionResult") {
+    const b = block as any;
+    if (b.type === "text") {
+      textParts.push(b.text);
+    }
+    if (b.thinkingSignature || b.textSignature) {
+      thoughtSignatureCount++;
+    }
+    if (b.type === "executionResult") {
       codeExecutionResults.push({
-        code: (block as any).code ?? "",
-        outcome: (block as any).outcome ?? "OUTCOME_FAILED",
-        output: (block as any).output ?? "",
+        code: b.code ?? "",
+        outcome: b.outcome ?? "OUTCOME_FAILED",
+        output: b.output ?? "",
       });
     }
   }
+  const text = textParts.join("");
 
   // Emit to logger if provided
   if (options?.logger) {
