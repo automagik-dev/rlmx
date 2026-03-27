@@ -349,6 +349,11 @@ async function runQuery(opts: CliOptions): Promise<void> {
   } else {
     outputResult(result, opts.output);
   }
+
+  // Exit with non-zero code on empty response abort (issue #14)
+  if (result.budgetHit === "empty_responses") {
+    process.exit(1);
+  }
 }
 
 // Rough cost estimate per 1M input tokens by provider (USD)

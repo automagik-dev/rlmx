@@ -247,6 +247,8 @@ export async function rlmLoop(
 
     // Iteration loop
     let actualIterations = 0;
+    let consecutiveEmpty = 0;
+    let emptyAbort = false;
     for (let iteration = 0; iteration < opts.maxIterations; iteration++) {
       // Check timeout
       if (abortController.signal.aborted) {
@@ -288,6 +290,20 @@ export async function rlmLoop(
           iteration,
           `LLM responded (${responseText.length} chars, ${response.usage.inputTokens}+${response.usage.outputTokens} tokens)`
         );
+      }
+
+      // Check for empty LLM response (issue #14)
+      if (responseText.length === 0) {
+        consecutiveEmpty++;
+        process.stderr.write(
+          `rlmx [iter ${iteration}]: WARNING — LLM returned empty response. Possible context size limit.\n`
+        );
+        if (consecutiveEmpty >= 3) {
+          emptyAbort = true;
+          break;
+        }
+      } else {
+        consecutiveEmpty = 0;
       }
 
       // Extract code blocks
@@ -470,7 +486,27 @@ export async function rlmLoop(
       }
     }
 
-    // Loop exited — force a final answer
+    // Loop exited — check reason and handle accordingly
+    if (emptyAbort) {
+      // Aborted due to consecutive empty responses (issue #14)
+      process.stderr.write(
+        `rlmx: 3 consecutive empty LLM responses — aborting. Context may exceed API limits.\n`
+      );
+      clearTimeout(timeoutHandle);
+      await repl.stop();
+
+      return buildResult(
+        "Error: aborted after 3 consecutive empty LLM responses. Context may exceed API token limits.",
+        usage,
+        actualIterations,
+        config,
+        "empty_responses",
+        geminiCounts,
+        repl.getGeminiBatteriesUsed()
+      );
+    }
+
+    // Force a final answer for normal loop exit
     if (opts.verbose) {
       const reason = budget.isExceeded() ? "budget exceeded" : abortController.signal.aborted ? "timeout" : "max iterations reached";
       logVerbose(actualIterations, `${reason}, forcing final answer`);
