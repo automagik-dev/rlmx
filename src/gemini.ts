@@ -93,7 +93,7 @@ export function buildGeminiOnPayload(
     gemini.googleSearch ||
     gemini.urlContext ||
     gemini.codeExecution ||
-    gemini.mediaResolution !== undefined ||
+    (gemini.mediaResolution !== null && gemini.mediaResolution !== undefined) ||
     outputSchema;
 
   if (!hasModifications) {

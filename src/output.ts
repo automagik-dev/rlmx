@@ -5,7 +5,7 @@
  * Stats output: --stats emits JSON to stderr, --output json --stats includes stats in response.
  */
 
-import type { UsageStats } from "./llm.js";
+import type { UsageStats, GeminiCallCounts } from "./llm.js";
 
 /** The full result returned by an RLM run. */
 export interface RLMResult {
@@ -15,6 +15,10 @@ export interface RLMResult {
   iterations: number;
   model: string;
   budgetHit?: string | null;
+  /** Gemini battery usage and call counts (populated when provider is Google). */
+  geminiCounts?: GeminiCallCounts;
+  /** Names of Gemini battery functions invoked during the run. */
+  geminiBatteriesUsed?: string[];
 }
 
 /** Cache stats included in --stats output when cache is enabled. */
@@ -24,6 +28,16 @@ export interface CacheStats {
   tokens_cached: number;
   tokens_read: number;
   cost_savings: number;
+}
+
+/** Gemini-specific stats included when provider is Google. */
+export interface GeminiStatsData {
+  thinking_level: string | null;
+  gemini_batteries_used: string[];
+  thought_signatures_circulated: number;
+  web_search_calls: number;
+  fetch_url_calls: number;
+  code_executions_server_side: number;
 }
 
 /** Stats data emitted via --stats. */
@@ -38,6 +52,7 @@ export interface StatsData {
   model: string;
   run_id: string;
   cache?: CacheStats;
+  gemini?: GeminiStatsData;
 }
 
 /** Stream event emitted during iteration. */
@@ -85,6 +100,12 @@ export function buildStats(
     budget_hit?: string | null;
     run_id?: string;
     cache_enabled?: boolean;
+    thinking_level?: string;
+    gemini_batteries_used?: string[];
+    thought_signatures_circulated?: number;
+    web_search_calls?: number;
+    fetch_url_calls?: number;
+    code_executions_server_side?: number;
   }
 ): StatsData {
   const stats: StatsData = {
@@ -106,6 +127,22 @@ export function buildStats(
       tokens_cached: result.usage.cacheWriteTokens,
       tokens_read: result.usage.cacheReadTokens,
       cost_savings: estimateCacheSavings(result),
+    };
+  }
+
+  // Include Gemini stats when any Gemini features were used
+  if (
+    meta.thinking_level ||
+    (meta.gemini_batteries_used && meta.gemini_batteries_used.length > 0) ||
+    (meta.thought_signatures_circulated && meta.thought_signatures_circulated > 0)
+  ) {
+    stats.gemini = {
+      thinking_level: meta.thinking_level ?? null,
+      gemini_batteries_used: meta.gemini_batteries_used ?? [],
+      thought_signatures_circulated: meta.thought_signatures_circulated ?? 0,
+      web_search_calls: meta.web_search_calls ?? 0,
+      fetch_url_calls: meta.fetch_url_calls ?? 0,
+      code_executions_server_side: meta.code_executions_server_side ?? 0,
     };
   }
 

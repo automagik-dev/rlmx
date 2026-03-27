@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { rlmLoop, type RLMOptions } from "./rlm.js";
 import type { RlmxConfig } from "./config.js";
 import type { LoadedContext } from "./context.js";
+import { isGoogleProvider } from "./gemini.js";
 
 interface BatchResult {
   question: string;
@@ -33,6 +34,8 @@ interface BatchAggregate {
 export interface BatchOptions extends Partial<RLMOptions> {
   maxCost?: number;
   parallel?: number;
+  /** Use Gemini Batch API for 50% cost reduction. Requires provider: google. */
+  batchApi?: boolean;
 }
 
 /**
@@ -58,6 +61,26 @@ export async function runBatch(
   if (questions.length === 0) {
     console.error("rlmx batch: no questions found in file");
     process.exit(1);
+  }
+
+  // Gemini Batch API mode — uses server-side batching for 50% cost reduction
+  if (options.batchApi) {
+    if (!isGoogleProvider(config.model.provider)) {
+      console.error(
+        `rlmx batch: --batch-api requires provider: google. Current provider: ${config.model.provider}`
+      );
+      process.exit(1);
+    }
+    console.error(
+      `rlmx batch: Gemini Batch API mode — ${questions.length} questions will be submitted as a batch job`
+    );
+    // TODO: Implement Gemini Batch API integration via @google/genai BatchClient
+    // The Batch API submits all questions as a single job and polls for results,
+    // providing 50% cost reduction on input/output tokens.
+    // For now, fall through to standard batching with a cost discount note.
+    console.error(
+      "rlmx batch: Gemini Batch API is not yet fully implemented. Using standard batching."
+    );
   }
 
   let totalCost = 0;

@@ -17,10 +17,12 @@ import {
   llmComplete,
   handleLLMRequest,
   createUsage,
+  createGeminiCallCounts,
   mergeUsage,
   type ChatMessage,
   type UsageStats,
   type CacheLLMConfig,
+  type GeminiCallCounts,
 } from "./llm.js";
 import {
   extractCodeBlocks,
@@ -170,6 +172,7 @@ export async function rlmLoop(
 ): Promise<RLMResult> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const usage = createUsage();
+  const geminiCounts = createGeminiCallCounts();
   const budget = new BudgetTracker(config.budget);
 
   // Build system prompt — cache mode embeds full context, normal mode uses metadata only
@@ -228,7 +231,8 @@ export async function rlmLoop(
         request,
         config,
         usage,
-        abortController.signal
+        abortController.signal,
+        geminiCounts
       );
     });
 
@@ -269,6 +273,11 @@ export async function rlmLoop(
       });
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
+
+      // Track thought signatures for Gemini stats
+      if (response.thoughtSignatureCount) {
+        geminiCounts.thoughtSignatures += response.thoughtSignatureCount;
+      }
 
       const responseText = response.text;
 
@@ -538,7 +547,9 @@ function buildResult(
   usage: UsageStats,
   iterations: number,
   config: RlmxConfig,
-  budgetHit?: string | null
+  budgetHit?: string | null,
+  geminiCounts?: GeminiCallCounts,
+  geminiBatteriesUsed?: string[]
 ): RLMResult {
   // Extract file references from the answer (paths like docs/foo/bar.md)
   const refRegex = /(?:^|[\s(["'])([a-zA-Z0-9_./-]+\.(?:md|txt|py|ts|js|json))/gm;
@@ -552,7 +563,7 @@ function buildResult(
     }
   }
 
-  return {
+  const result: RLMResult = {
     answer,
     references,
     usage,
@@ -560,4 +571,13 @@ function buildResult(
     model: `${config.model.provider}/${config.model.model}`,
     budgetHit: budgetHit ?? null,
   };
+
+  if (geminiCounts) {
+    result.geminiCounts = geminiCounts;
+  }
+  if (geminiBatteriesUsed && geminiBatteriesUsed.length > 0) {
+    result.geminiBatteriesUsed = geminiBatteriesUsed;
+  }
+
+  return result;
 }

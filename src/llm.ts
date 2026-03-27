@@ -28,6 +28,20 @@ export function createUsage(): UsageStats {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalCost: 0, llmCalls: 0 };
 }
 
+/** Gemini-specific call counts tracked across an RLM run. */
+export interface GeminiCallCounts {
+  webSearch: number;
+  fetchUrl: number;
+  generateImage: number;
+  codeExecutionsServerSide: number;
+  thoughtSignatures: number;
+}
+
+/** Create a fresh Gemini call counter. */
+export function createGeminiCallCounts(): GeminiCallCounts {
+  return { webSearch: 0, fetchUrl: 0, generateImage: 0, codeExecutionsServerSide: 0, thoughtSignatures: 0 };
+}
+
 /** Merge child usage into parent. */
 export function mergeUsage(parent: UsageStats, child: UsageStats): void {
   parent.inputTokens += child.inputTokens;
@@ -363,12 +377,14 @@ export async function rlmQueryBatched(
 /**
  * Handle an LLM IPC request from the Python REPL.
  * Routes to the appropriate handler based on request_type.
+ * When geminiCounts is provided, increments Gemini-specific call counters.
  */
 export async function handleLLMRequest(
   request: LLMRequest,
   config: RlmxConfig,
   usage: UsageStats,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  geminiCounts?: GeminiCallCounts
 ): Promise<string[]> {
   const subCallModel: ModelConfig = config.model.subCallModel
     ? { ...config.model, model: config.model.subCallModel }
@@ -418,6 +434,7 @@ export async function handleLLMRequest(
           `Error: web_search() requires provider: google. Current provider: ${config.model.provider}`,
         ];
       }
+      if (geminiCounts) geminiCounts.webSearch++;
       const wsResp = await llmComplete(
         [{ role: "user", content: request.prompts[0] }],
         config.model,
@@ -436,6 +453,7 @@ export async function handleLLMRequest(
           `Error: fetch_url() requires provider: google. Current provider: ${config.model.provider}`,
         ];
       }
+      if (geminiCounts) geminiCounts.fetchUrl++;
       const fuResp = await llmComplete(
         [{ role: "user", content: `Fetch and return the content from: ${request.prompts[0]}` }],
         config.model,
@@ -454,13 +472,19 @@ export async function handleLLMRequest(
           `Error: generate_image() requires provider: google. Current provider: ${config.model.provider}`,
         ];
       }
-      // IMAGE_GENERATION: Gemini 3 image generation is available but requires direct API calls
-      // that are not yet exposed through pi/ai completeSimple interface. This is a placeholder
-      // that returns an error for now. Full implementation would involve calling the Gemini API directly.
-      return [
-        `Error: generate_image() requires direct Gemini API integration (not yet available via pi/ai). ` +
-          `You can use Gemini's web interface or Google AI Studio directly for image generation.`,
-      ];
+      if (geminiCounts) geminiCounts.generateImage++;
+      // Image generation via Gemini: send prompt to model with image generation instruction.
+      // The model returns a text description or URL depending on capabilities.
+      const igResp = await llmComplete(
+        [{ role: "user", content: `Generate an image based on this description: ${request.prompts[0]}` }],
+        config.model,
+        {
+          signal,
+          geminiConfig: config.gemini,
+        }
+      );
+      mergeUsage(usage, igResp.usage);
+      return [igResp.text];
     }
 
     default:

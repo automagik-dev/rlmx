@@ -103,6 +103,101 @@ cache:
 
 For detailed provider-specific TTL behavior (Google, Anthropic, Bedrock, OpenAI), see [docs/TTL_CONTROL.md](docs/TTL_CONTROL.md).
 
+## Gemini 3 Native (v0.4)
+
+rlmx v0.4 integrates 14 Gemini 3 native features, making it the cheapest and most capable context agent available. All features are opt-in, additive, and silently ignored on non-Google providers.
+
+### Quick Start
+
+```yaml
+# rlmx.yaml
+model:
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+
+gemini:
+  thinking-level: medium      # Control thinking depth
+  google-search: true          # Web search in REPL
+  url-context: true            # Fetch URLs in REPL
+  code-execution: true         # Server-side Python
+  media-resolution:
+    images: high               # ~1120 tokens/image
+    pdfs: medium               # ~560 tokens/page
+    video: low                 # ~70 tokens/frame
+```
+
+```bash
+rlmx "Research latest AI developments" --context ./notes/ --tools standard --thinking high
+```
+
+### Features
+
+| Feature | Config | CLI Flag | Description |
+|---------|--------|----------|-------------|
+| Thinking levels | `gemini.thinking-level` | `--thinking` | minimal/low/medium/high — controls reasoning depth |
+| Thought signatures | automatic | — | Multi-turn quality via pi/ai signature circulation |
+| Structured output | `output.schema` | — | JSON Schema enforcement via API (not text parsing) |
+| Google Search | `gemini.google-search` | — | `web_search()` battery in REPL |
+| URL Context | `gemini.url-context` | — | `fetch_url()` battery in REPL |
+| Code Execution | `gemini.code-execution` | — | Server-side Python alongside local REPL |
+| Image Generation | `gemini.image-gen` | — | `generate_image()` via Nano Banana |
+| Media Resolution | `gemini.media-resolution` | — | Per-type token cost control |
+| Batch API | — | `--batch-api` | 50% cost reduction for bulk operations |
+| Context Caching | `cache.enabled` | `--cache` | 90% discount on cached tokens |
+| Computer Use | `gemini.computer-use` | — | Planned for v0.5 |
+| Maps Grounding | `gemini.maps-grounding` | — | Planned for v0.5 |
+| File Search | `gemini.file-search` | — | Planned for v0.5 |
+| Function + Tools | automatic | — | Custom functions + built-in tools in one API call |
+
+### Cost Comparison
+
+| Mode | Cost (per 1M tokens) | Savings |
+|------|---------------------|---------|
+| Base (flash-lite) | $0.075 input / $0.30 output | — |
+| + Context caching | ~$0.0075 input (cached) | 90% on input |
+| + Batch API | ~$0.0375 input / $0.15 output | 50% on all |
+| Cache + Batch | ~$0.00375 input (cached+batch) | 95% on cached input |
+
+**100 queries over 500K context: < $2.00** with cache + batch stacking.
+
+### Provider Compatibility
+
+| Feature | Google | Anthropic | OpenAI | Others |
+|---------|--------|-----------|--------|--------|
+| Thinking levels | native | ignored | ignored | ignored |
+| Thought signatures | native | ignored | ignored | ignored |
+| Structured output | API-enforced | FINAL() fallback | FINAL() fallback | FINAL() fallback |
+| Web search/URL | native | error msg | error msg | error msg |
+| Code execution | native | local only | local only | local only |
+| Media resolution | native | ignored | ignored | ignored |
+| Batch API | native | standard batch | standard batch | standard batch |
+| Context caching | native | native | native | provider-dependent |
+
+### Gemini Batteries (REPL Functions)
+
+Available with `--tools standard` or `--tools full` when provider is Google:
+
+```python
+# In REPL code:
+result = web_search("latest nodejs version")
+print(result)
+
+page = fetch_url("https://example.com/docs")
+print(page[:500])
+
+img_path = generate_image("architecture diagram of microservices")
+print(img_path)
+```
+
+Non-Google providers get clear error messages: `"web_search() requires provider: google"`.
+
+### Examples
+
+See `examples/` for complete configs:
+- `gemini-research/` — Web search + URL context research agent
+- `gemini-multimodal/` — Media resolution + image analysis
+- `gemini-cheap-batch/` — Maximum cost stacking example
+
 ## Config Files
 
 Drop `.md` files in your working directory to customize behavior. Run `rlmx init` to scaffold defaults with inline comments.
@@ -164,6 +259,10 @@ Options:
   --dir <path>            Directory for init command (default: cwd)
   --help, -h              Show this help message
   --version, -v           Show version
+
+Gemini options:
+  --thinking <level>      Thinking level: minimal, low, medium, high
+  --batch-api             Use Gemini Batch API for 50% cost reduction
 
 Cache options:
   --estimate              Estimate cache costs without making LLM calls

@@ -120,9 +120,34 @@ budget:
 # ─── Tools Level ──────────────────────────────────────────
 # Controls which built-in functions are available in the REPL.
 # core     — 6 paper functions only (default, paper-faithful)
-# standard — core + batteries.py convenience functions
+# standard — core + batteries.py convenience functions + gemini batteries (if google)
 # full     — standard + auto-detected package info in system prompt
 tools-level: core
+
+# ─── Gemini 3 Native ────────────────────────────────────
+# Gemini-specific features. Silently ignored for non-Google providers.
+# All features are opt-in and additive — no breaking changes.
+# gemini:
+#   thinking-level: null         # minimal|low|medium|high — controls thinking depth
+#   google-search: false         # Enable Google Search grounding (web_search() battery)
+#   url-context: false           # Enable URL Context (fetch_url() battery)
+#   code-execution: false        # Enable server-side Python execution
+#   media-resolution:            # Control media token costs per type
+#     images: auto               # low|medium|high|auto
+#     pdfs: auto                 # low|medium|high|auto
+#     video: auto                # low|medium|high|auto
+#   computer-use: false          # Planned for v0.5
+#   maps-grounding: false        # Planned for v0.5
+#   file-search: false           # Planned for v0.5
+
+# ─── Output ─────────────────────────────────────────────
+# Structured output configuration.
+# output:
+#   schema:                      # JSON Schema for structured output (Gemini only)
+#     type: object               # When set, model output is guaranteed to match schema
+#     properties:                # Falls back to FINAL() text parsing on non-Google
+#       answer:
+#         type: string
 `;
 
 async function fileExists(path: string): Promise<boolean> {
