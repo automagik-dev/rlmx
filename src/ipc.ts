@@ -57,7 +57,10 @@ export interface LLMRequest {
     | "llm_query"
     | "llm_query_batched"
     | "rlm_query"
-    | "rlm_query_batched";
+    | "rlm_query_batched"
+    | "web_search"
+    | "fetch_url"
+    | "generate_image";
   prompts: string[];
   model?: string;
 }

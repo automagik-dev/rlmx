@@ -29,6 +29,7 @@ const __dirname = dirname(__filename);
 // Default paths relative to dist/
 const REPL_SERVER_PATH = join(__dirname, "..", "python", "repl_server.py");
 const BATTERIES_PATH = join(__dirname, "..", "python", "batteries.py");
+const GEMINI_BATTERIES_PATH = join(__dirname, "..", "python", "gemini_batteries.py");
 
 /** Battery function names — tracked for stats. */
 const BATTERY_FUNCTION_NAMES = [
@@ -42,6 +43,13 @@ const BATTERY_FUNCTION_NAMES = [
   "reduce_query",
 ] as const;
 
+/** Gemini battery function names — tracked for Gemini stats. */
+const GEMINI_BATTERY_FUNCTION_NAMES = [
+  "web_search",
+  "fetch_url",
+  "generate_image",
+] as const;
+
 /** Options passed to REPL.start() */
 export interface REPLStartOptions {
   /** Context to inject (string, list, or dict serialized as JSON string). */
@@ -50,6 +58,8 @@ export interface REPLStartOptions {
   tools?: Record<string, string>;
   /** Tool level: core (6 paper functions), standard (+ batteries), full (+ package info). */
   toolsLevel?: ToolsLevel;
+  /** Whether to load Gemini batteries (web_search, fetch_url, generate_image). */
+  loadGeminiBatteries?: boolean;
   /** Python executable path (default: "python3"). */
   pythonPath?: string;
   /** Path to repl_server.py (auto-detected). */
@@ -78,6 +88,7 @@ export class REPL {
 
   // Battery tracking
   private _batteriesUsed = new Set<string>();
+  private _geminiBatteriesUsed = new Set<string>();
   private _skipTracking = false;
 
   // Optional logger
@@ -150,6 +161,11 @@ export class REPL {
     const level = options.toolsLevel ?? "core";
     if (level === "standard" || level === "full") {
       await this._loadBatteries();
+
+      // Load Gemini batteries when requested (Google provider with standard/full tools)
+      if (options.loadGeminiBatteries) {
+        await this._loadGeminiBatteries();
+      }
     }
   }
 
@@ -234,11 +250,23 @@ export class REPL {
     return [...this._batteriesUsed];
   }
 
+  /** Get list of Gemini battery functions that were called during this session. */
+  getGeminiBatteriesUsed(): string[] {
+    return [...this._geminiBatteriesUsed];
+  }
+
   // ─── Internal ────────────────────────────────────────────
 
   private async _loadBatteries(): Promise<void> {
     const code = await readFile(BATTERIES_PATH, "utf-8");
     // Skip battery tracking for the definition code itself
+    this._skipTracking = true;
+    await this.execute(code);
+    this._skipTracking = false;
+  }
+
+  private async _loadGeminiBatteries(): Promise<void> {
+    const code = await readFile(GEMINI_BATTERIES_PATH, "utf-8");
     this._skipTracking = true;
     await this.execute(code);
     this._skipTracking = false;
@@ -250,6 +278,11 @@ export class REPL {
     for (const name of BATTERY_FUNCTION_NAMES) {
       if (code.includes(name)) {
         this._batteriesUsed.add(name);
+      }
+    }
+    for (const name of GEMINI_BATTERY_FUNCTION_NAMES) {
+      if (code.includes(name)) {
+        this._geminiBatteriesUsed.add(name);
       }
     }
   }

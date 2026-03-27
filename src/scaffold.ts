@@ -13,9 +13,9 @@ const RLMX_YAML_DEFAULT = `# rlmx.yaml — Single config file for rlmx (RLM algo
 # model: model ID for the main RLM loop
 # sub-call-model: model for llm_query() sub-calls (cheaper/faster)
 model:
-  provider: anthropic
-  model: claude-sonnet-4-5
-  sub-call-model: claude-haiku-4-5
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  sub-call-model: gemini-3.1-flash-lite-preview
 
 # ─── System Prompt ────────────────────────────────────────
 # The system prompt sent to the LLM. This is the RLM paper prompt.
@@ -97,6 +97,16 @@ context:
     - .git
     - dist
 
+# ─── Cache (CAG Mode) ───────────────────────────────────
+# Enable cache-augmented generation. Full context is baked into the
+# system prompt and cached at the provider for subsequent queries.
+# cache:
+#   enabled: false             # true to enable CAG mode (or use --cache flag)
+#   retention: long            # short|long — maps to pi/ai cacheRetention
+#   ttl: 3600                  # seconds — provider-specific TTL
+#   expire-time: ""            # ISO 8601 — for Google explicit caching
+#   session-prefix: ""         # prepended to content hash for sessionId
+
 # ─── Budget ───────────────────────────────────────────────
 # Cost and resource limits. null = unlimited.
 # max-cost: maximum USD spend per run
@@ -110,9 +120,34 @@ budget:
 # ─── Tools Level ──────────────────────────────────────────
 # Controls which built-in functions are available in the REPL.
 # core     — 6 paper functions only (default, paper-faithful)
-# standard — core + batteries.py convenience functions
+# standard — core + batteries.py convenience functions + gemini batteries (if google)
 # full     — standard + auto-detected package info in system prompt
 tools-level: core
+
+# ─── Gemini 3 Native ────────────────────────────────────
+# Gemini-specific features. Silently ignored for non-Google providers.
+# All features are opt-in and additive — no breaking changes.
+# gemini:
+#   thinking-level: null         # minimal|low|medium|high — controls thinking depth
+#   google-search: false         # Enable Google Search grounding (web_search() battery)
+#   url-context: false           # Enable URL Context (fetch_url() battery)
+#   code-execution: false        # Enable server-side Python execution
+#   media-resolution:            # Control media token costs per type
+#     images: auto               # low|medium|high|auto
+#     pdfs: auto                 # low|medium|high|auto
+#     video: auto                # low|medium|high|auto
+#   computer-use: false          # Planned for v0.5
+#   maps-grounding: false        # Planned for v0.5
+#   file-search: false           # Planned for v0.5
+
+# ─── Output ─────────────────────────────────────────────
+# Structured output configuration.
+# output:
+#   schema:                      # JSON Schema for structured output (Gemini only)
+#     type: object               # When set, model output is guaranteed to match schema
+#     properties:                # Falls back to FINAL() text parsing on non-Google
+#       answer:
+#         type: string
 `;
 
 async function fileExists(path: string): Promise<boolean> {

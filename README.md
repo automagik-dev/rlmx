@@ -45,6 +45,159 @@ rlmx implements the RLM (REPL-LM) algorithm:
 
 4. **Termination** — The loop ends when the LLM calls `FINAL("answer")` or `FINAL_VAR("variable_name")`, or when max iterations (default 30) is reached.
 
+## CAG Mode (Cache-Augmented Generation)
+
+CAG mode bakes your full context into the system prompt and leverages provider-level caching so that subsequent queries against the same context are dramatically cheaper and faster.
+
+### When to use `--cache` vs default RLM
+
+| Mode | Best for | How it works |
+|------|----------|-------------|
+| **Default (RLM)** | Large corpora, exploratory analysis | Context loaded into REPL `context` variable; LLM navigates it programmatically |
+| **`--cache`** | Repeated questions on same docs, study sessions, batch Q&A | Full context injected into system prompt and cached at the provider |
+
+Use `--cache` when you plan to ask multiple questions about the same set of documents. Use default RLM when the context is too large for a single system prompt or you need programmatic navigation.
+
+### Cost comparison
+
+| Query | Cost |
+|-------|------|
+| First query (cache miss) | Full input token cost (context + prompt) |
+| Subsequent queries (cache hit) | **50-90% cheaper** -- only cache-read tokens are billed |
+
+The exact savings depend on your provider. Google and Anthropic both offer significant discounts on cached input tokens.
+
+### Batch usage
+
+Process a list of questions against cached context:
+
+```bash
+rlmx batch questions.txt --context ./docs/
+rlmx batch questions.txt --context ./docs/ --output json
+```
+
+Each question in the file is run sequentially, reusing the cached context. The first question pays full cost; subsequent questions benefit from the cache.
+
+### Cache warmup and estimation
+
+Warm the cache and estimate costs before running queries:
+
+```bash
+rlmx cache --context ./docs/ --estimate
+```
+
+This loads your context, calculates token counts, and shows estimated costs for cached vs uncached queries without making any LLM calls.
+
+### YAML configuration
+
+Enable cache in your `rlmx.yaml`:
+
+```yaml
+cache:
+  enabled: true              # or use --cache flag per-invocation
+  retention: long            # short|long -- maps to provider cache retention
+  ttl: 3600                  # seconds -- provider-specific TTL
+  expire-time: ""            # ISO 8601 -- for Google explicit caching
+  session-prefix: "myproject" # prepended to content hash for sessionId
+```
+
+For detailed provider-specific TTL behavior (Google, Anthropic, Bedrock, OpenAI), see [docs/TTL_CONTROL.md](docs/TTL_CONTROL.md).
+
+## Gemini 3 Native (v0.4)
+
+rlmx v0.4 integrates 14 Gemini 3 native features, making it the cheapest and most capable context agent available. All features are opt-in, additive, and silently ignored on non-Google providers.
+
+### Quick Start
+
+```yaml
+# rlmx.yaml
+model:
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+
+gemini:
+  thinking-level: medium      # Control thinking depth
+  google-search: true          # Web search in REPL
+  url-context: true            # Fetch URLs in REPL
+  code-execution: true         # Server-side Python
+  media-resolution:
+    images: high               # ~1120 tokens/image
+    pdfs: medium               # ~560 tokens/page
+    video: low                 # ~70 tokens/frame
+```
+
+```bash
+rlmx "Research latest AI developments" --context ./notes/ --tools standard --thinking high
+```
+
+### Features
+
+| Feature | Config | CLI Flag | Description |
+|---------|--------|----------|-------------|
+| Thinking levels | `gemini.thinking-level` | `--thinking` | minimal/low/medium/high — controls reasoning depth |
+| Thought signatures | automatic | — | Multi-turn quality via pi/ai signature circulation |
+| Structured output | `output.schema` | — | JSON Schema enforcement via API (not text parsing) |
+| Google Search | `gemini.google-search` | — | `web_search()` battery in REPL |
+| URL Context | `gemini.url-context` | — | `fetch_url()` battery in REPL |
+| Code Execution | `gemini.code-execution` | — | Server-side Python alongside local REPL |
+| Image Generation | `gemini.image-gen` | — | `generate_image()` via Nano Banana |
+| Media Resolution | `gemini.media-resolution` | — | Per-type token cost control |
+| Batch API | — | `--batch-api` | 50% cost reduction for bulk operations |
+| Context Caching | `cache.enabled` | `--cache` | 90% discount on cached tokens |
+| Computer Use | `gemini.computer-use` | — | Planned for v0.5 |
+| Maps Grounding | `gemini.maps-grounding` | — | Planned for v0.5 |
+| File Search | `gemini.file-search` | — | Planned for v0.5 |
+| Function + Tools | automatic | — | Custom functions + built-in tools in one API call |
+
+### Cost Comparison
+
+| Mode | Cost (per 1M tokens) | Savings |
+|------|---------------------|---------|
+| Base (flash-lite) | $0.075 input / $0.30 output | — |
+| + Context caching | ~$0.0075 input (cached) | 90% on input |
+| + Batch API | ~$0.0375 input / $0.15 output | 50% on all |
+| Cache + Batch | ~$0.00375 input (cached+batch) | 95% on cached input |
+
+**100 queries over 500K context: < $2.00** with cache + batch stacking.
+
+### Provider Compatibility
+
+| Feature | Google | Anthropic | OpenAI | Others |
+|---------|--------|-----------|--------|--------|
+| Thinking levels | native | ignored | ignored | ignored |
+| Thought signatures | native | ignored | ignored | ignored |
+| Structured output | API-enforced | FINAL() fallback | FINAL() fallback | FINAL() fallback |
+| Web search/URL | native | error msg | error msg | error msg |
+| Code execution | native | local only | local only | local only |
+| Media resolution | native | ignored | ignored | ignored |
+| Batch API | native | standard batch | standard batch | standard batch |
+| Context caching | native | native | native | provider-dependent |
+
+### Gemini Batteries (REPL Functions)
+
+Available with `--tools standard` or `--tools full` when provider is Google:
+
+```python
+# In REPL code:
+result = web_search("latest nodejs version")
+print(result)
+
+page = fetch_url("https://example.com/docs")
+print(page[:500])
+
+img_path = generate_image("architecture diagram of microservices")
+print(img_path)
+```
+
+Non-Google providers get clear error messages: `"web_search() requires provider: google"`.
+
+### Examples
+
+See `examples/` for complete configs:
+- `gemini-research/` — Web search + URL context research agent
+- `gemini-multimodal/` — Media resolution + image analysis
+- `gemini-cheap-batch/` — Maximum cost stacking example
+
 ## Config Files
 
 Drop `.md` files in your working directory to customize behavior. Run `rlmx init` to scaffold defaults with inline comments.
@@ -81,9 +234,9 @@ def summarize_chunk(text, max_words=100):
 ### MODEL.md Format
 
 ```markdown
-provider: anthropic
-model: claude-sonnet-4-5
-sub-call-model: claude-haiku-4-5
+provider: google
+model: gemini-3.1-flash-lite-preview
+sub-call-model: gemini-3.1-flash-lite-preview
 ```
 
 Supports any provider available in [pi/ai](https://github.com/nickarora/pi-ai): `anthropic`, `openai`, `google`, etc.
@@ -91,11 +244,14 @@ Supports any provider available in [pi/ai](https://github.com/nickarora/pi-ai): 
 ## CLI Reference
 
 ```
-rlmx "query" [options]          Run an RLM query
-rlmx init [--dir <path>]       Scaffold .md config files
+rlmx "query" [options]                Run an RLM query
+rlmx init [--dir <path>]             Scaffold config files
+rlmx batch <file> [options]           Run batch queries from a file
+rlmx cache [options]                  Cache management (warmup, estimate)
 
 Options:
   --context <path>        Path to context (directory or file)
+  --cache                 Enable CAG mode (cache context in system prompt)
   --output <mode>         Output mode: text (default), json, stream
   --verbose               Show iteration progress on stderr
   --max-iterations <n>    Maximum RLM iterations (default: 30)
@@ -103,6 +259,14 @@ Options:
   --dir <path>            Directory for init command (default: cwd)
   --help, -h              Show this help message
   --version, -v           Show version
+
+Gemini options:
+  --thinking <level>      Thinking level: minimal, low, medium, high
+  --batch-api             Use Gemini Batch API for 50% cost reduction
+
+Cache options:
+  --estimate              Estimate cache costs without making LLM calls
+  --session-prefix <str>  Override session prefix for cache key
 ```
 
 ## Output Modes
@@ -125,7 +289,7 @@ Returns:
   "references": ["docs/start/create-project.md", "docs/concept/inter-process-communication.md"],
   "usage": { "inputTokens": 12500, "outputTokens": 3200, "llmCalls": 5 },
   "iterations": 3,
-  "model": "anthropic/claude-sonnet-4-5"
+  "model": "google/gemini-3.1-flash-lite-preview"
 }
 ```
 
@@ -150,9 +314,9 @@ Emits JSONL events per iteration, then a final event.
 
 rlmx uses pi/ai for LLM calls. Set the appropriate API key for your provider:
 
+- `GEMINI_API_KEY` — for Google Gemini models (default provider)
 - `ANTHROPIC_API_KEY` — for Anthropic models
 - `OPENAI_API_KEY` — for OpenAI models
-- `GOOGLE_API_KEY` — for Google models
 
 ## Programmatic API
 

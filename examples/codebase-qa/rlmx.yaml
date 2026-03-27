@@ -2,9 +2,9 @@
 # Use: rlmx "How does authentication work?" --context ./src/
 
 model:
-  provider: anthropic
-  model: claude-sonnet-4-5
-  sub-call-model: claude-haiku-4-5
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  sub-call-model: gemini-3.1-flash-lite-preview
 
 system: |
   You are a senior software engineer analyzing a codebase. Your context contains source code files.

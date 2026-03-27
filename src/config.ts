@@ -24,10 +24,44 @@ export interface BudgetConfig {
   maxDepth: number | null;
 }
 
+/** Cache configuration for CAG mode */
+export interface CacheConfig {
+  enabled: boolean;
+  strategy: "full";
+  sessionPrefix?: string;
+  retention: "short" | "long";
+  ttl?: number;       // seconds
+  expireTime?: string; // ISO 8601
+}
+
 /** Context loading configuration */
 export interface ContextConfig {
   extensions: string[];
   exclude: string[];
+}
+
+/** Media resolution configuration per content type */
+export interface MediaResolutionConfig {
+  images?: string;
+  pdfs?: string;
+  video?: string;
+}
+
+/** Gemini-specific configuration */
+export interface GeminiConfig {
+  thinkingLevel: string | null;
+  googleSearch: boolean;
+  urlContext: boolean;
+  codeExecution: boolean;
+  mediaResolution: MediaResolutionConfig | null;
+  computerUse: boolean;
+  mapsGrounding: boolean;
+  fileSearch: boolean;
+}
+
+/** Structured output schema configuration */
+export interface OutputConfig {
+  schema: Record<string, unknown> | null;
 }
 
 /** Tool level — controls which functions are available in the REPL */
@@ -47,6 +81,12 @@ export interface RlmxConfig {
   contextConfig: ContextConfig;
   /** Tool level */
   toolsLevel: ToolsLevel;
+  /** Cache configuration for CAG mode */
+  cache: CacheConfig;
+  /** Gemini-specific configuration */
+  gemini: GeminiConfig;
+  /** Structured output configuration */
+  output: OutputConfig;
   /** Config source: "yaml" | "md" | "defaults" */
   configSource: "yaml" | "md" | "defaults";
 }
@@ -54,8 +94,8 @@ export interface RlmxConfig {
 // ─── Defaults ────────────────────────────────────────────
 
 const DEFAULT_MODEL: ModelConfig = {
-  provider: "anthropic",
-  model: "claude-sonnet-4-5",
+  provider: "google",
+  model: "gemini-3.1-flash-lite-preview",
 };
 
 const DEFAULT_BUDGET: BudgetConfig = {
@@ -64,9 +104,30 @@ const DEFAULT_BUDGET: BudgetConfig = {
   maxDepth: null,
 };
 
+const DEFAULT_CACHE_CONFIG: CacheConfig = {
+  enabled: false,
+  strategy: "full",
+  retention: "long",
+};
+
 const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   extensions: [".md"],
   exclude: ["node_modules", ".git", "dist"],
+};
+
+const DEFAULT_GEMINI_CONFIG: GeminiConfig = {
+  thinkingLevel: null,
+  googleSearch: false,
+  urlContext: false,
+  codeExecution: false,
+  mediaResolution: null,
+  computerUse: false,
+  mapsGrounding: false,
+  fileSearch: false,
+};
+
+const DEFAULT_OUTPUT_CONFIG: OutputConfig = {
+  schema: null,
 };
 
 // ─── YAML Schema ─────────────────────────────────────────
@@ -91,6 +152,31 @@ interface RawYamlConfig {
     "max-depth"?: number | null;
   };
   "tools-level"?: string;
+  gemini?: {
+    "thinking-level"?: string;
+    "google-search"?: boolean;
+    "url-context"?: boolean;
+    "code-execution"?: boolean;
+    "media-resolution"?: {
+      images?: string;
+      pdfs?: string;
+      video?: string;
+    };
+    "computer-use"?: boolean;
+    "maps-grounding"?: boolean;
+    "file-search"?: boolean;
+  };
+  output?: {
+    schema?: Record<string, unknown>;
+  };
+  cache?: {
+    enabled?: boolean;
+    strategy?: string;
+    "session-prefix"?: string;
+    retention?: string;
+    ttl?: number;
+    "expire-time"?: string;
+  };
 }
 
 // ─── YAML Loading ────────────────────────────────────────
@@ -203,6 +289,82 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   const system = cfg.system?.trim() || null;
   const criteria = cfg.criteria?.trim() || null;
 
+  // Parse cache config
+  const rawRetention = cfg.cache?.retention ?? "long";
+  if (rawRetention && !["short", "long"].includes(rawRetention)) {
+    throw new Error(
+      `Invalid cache.retention "${rawRetention}" in rlmx.yaml. Must be one of: short, long.`
+    );
+  }
+  const rawStrategy = cfg.cache?.strategy ?? "full";
+  if (rawStrategy && rawStrategy !== "full") {
+    throw new Error(
+      `Invalid cache.strategy "${rawStrategy}" in rlmx.yaml. Only "full" is currently supported.`
+    );
+  }
+  const cache: CacheConfig = {
+    enabled: cfg.cache?.enabled ?? DEFAULT_CACHE_CONFIG.enabled,
+    strategy: rawStrategy as "full",
+    retention: rawRetention as "short" | "long",
+  };
+  if (cfg.cache?.["session-prefix"]) {
+    cache.sessionPrefix = cfg.cache["session-prefix"];
+  }
+  if (cfg.cache?.ttl !== undefined) {
+    cache.ttl = cfg.cache.ttl;
+  }
+  if (cfg.cache?.["expire-time"]) {
+    cache.expireTime = cfg.cache["expire-time"];
+  }
+
+  // Parse gemini config
+  const gemini: GeminiConfig = {
+    thinkingLevel: cfg.gemini?.["thinking-level"] ?? DEFAULT_GEMINI_CONFIG.thinkingLevel,
+    googleSearch: cfg.gemini?.["google-search"] ?? DEFAULT_GEMINI_CONFIG.googleSearch,
+    urlContext: cfg.gemini?.["url-context"] ?? DEFAULT_GEMINI_CONFIG.urlContext,
+    codeExecution: cfg.gemini?.["code-execution"] ?? DEFAULT_GEMINI_CONFIG.codeExecution,
+    mediaResolution: cfg.gemini?.["media-resolution"] ?? DEFAULT_GEMINI_CONFIG.mediaResolution,
+    computerUse: cfg.gemini?.["computer-use"] ?? DEFAULT_GEMINI_CONFIG.computerUse,
+    mapsGrounding: cfg.gemini?.["maps-grounding"] ?? DEFAULT_GEMINI_CONFIG.mapsGrounding,
+    fileSearch: cfg.gemini?.["file-search"] ?? DEFAULT_GEMINI_CONFIG.fileSearch,
+  };
+
+  // Validate thinking level if provided
+  if (gemini.thinkingLevel !== null) {
+    const validLevels = ["minimal", "low", "medium", "high"];
+    if (!validLevels.includes(gemini.thinkingLevel)) {
+      throw new Error(
+        `Invalid gemini.thinking-level "${gemini.thinkingLevel}" in rlmx.yaml. ` +
+        `Must be one of: minimal, low, medium, high.`
+      );
+    }
+  }
+
+  // Validate media resolution values if provided
+  if (gemini.mediaResolution) {
+    const validResolutions = ["low", "medium", "high", "auto"];
+    for (const [key, value] of Object.entries(gemini.mediaResolution)) {
+      if (value && !validResolutions.includes(value)) {
+        throw new Error(
+          `Invalid gemini.media-resolution.${key} "${value}" in rlmx.yaml. ` +
+          `Must be one of: low, medium, high, auto.`
+        );
+      }
+    }
+  }
+
+  // Parse output config
+  const output: OutputConfig = {
+    schema: cfg.output?.schema ?? DEFAULT_OUTPUT_CONFIG.schema,
+  };
+
+  // Validate output schema if provided
+  if (output.schema !== null && typeof output.schema !== "object") {
+    throw new Error(
+      `Invalid output.schema in rlmx.yaml: must be a JSON Schema object or null.`
+    );
+  }
+
   return {
     system,
     tools,
@@ -212,6 +374,9 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     budget,
     contextConfig,
     toolsLevel,
+    cache,
+    gemini,
+    output,
     configSource: "yaml",
   };
 }
@@ -325,6 +490,9 @@ async function loadConfigFromMd(dir: string): Promise<RlmxConfig> {
     budget: { ...DEFAULT_BUDGET },
     contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
     toolsLevel: "core",
+    cache: { ...DEFAULT_CACHE_CONFIG },
+    gemini: { ...DEFAULT_GEMINI_CONFIG },
+    output: { ...DEFAULT_OUTPUT_CONFIG },
     configSource: "md",
   };
 }
@@ -342,6 +510,9 @@ function defaultConfig(dir: string): RlmxConfig {
     budget: { ...DEFAULT_BUDGET },
     contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
     toolsLevel: "core",
+    cache: { ...DEFAULT_CACHE_CONFIG },
+    gemini: { ...DEFAULT_GEMINI_CONFIG },
+    output: { ...DEFAULT_OUTPUT_CONFIG },
     configSource: "defaults",
   };
 }

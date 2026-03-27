@@ -2,9 +2,9 @@
 # Use: rlmx "Review this paper for novelty and methodology" --context paper.pdf
 
 model:
-  provider: anthropic
-  model: claude-sonnet-4-5
-  sub-call-model: claude-haiku-4-5
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  sub-call-model: gemini-3.1-flash-lite-preview
 
 system: |
   You are an expert academic peer reviewer. Your context contains one or more research papers.

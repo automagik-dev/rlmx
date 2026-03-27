@@ -5,7 +5,7 @@ import { buildStats, type RLMResult } from "../src/output.js";
 const mockResult: RLMResult = {
   answer: "Test answer",
   references: ["file.md"],
-  usage: { inputTokens: 1000, outputTokens: 500, totalCost: 0.05, llmCalls: 3 },
+  usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, totalCost: 0.05, llmCalls: 3 },
   iterations: 5,
   model: "anthropic/claude-sonnet-4-5",
   budgetHit: null,

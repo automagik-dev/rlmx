@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 /** Supported log event types. */
 export type EventType =
   | "run_start"
+  | "cache_init"
   | "llm_call"
   | "llm_subcall"
   | "repl_exec"
@@ -77,6 +78,19 @@ export class Logger {
     this.log("run_start", data);
   }
 
+  /** Emit cache_init event when cache mode is enabled. */
+  cacheInit(data: {
+    contentHash: string;
+    sessionId: string;
+    estimatedTokens: number;
+  }): void {
+    this.log("cache_init", {
+      content_hash: data.contentHash,
+      session_id: data.sessionId,
+      estimated_tokens: data.estimatedTokens,
+    });
+  }
+
   /** Emit llm_call event with per-call metrics. */
   llmCall(data: {
     iteration: number;
@@ -84,6 +98,8 @@ export class Logger {
     output_tokens: number;
     cost: number;
     time_ms: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
   }): void {
     this.log("llm_call", data);
   }

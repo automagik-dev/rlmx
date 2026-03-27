@@ -4,18 +4,23 @@ import { resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { loadConfig, type ToolsLevel } from "./config.js";
+import { isValidThinkingLevel, checkFutureFlags, type ThinkingLevel } from "./gemini.js";
 import { scaffold, needsScaffold } from "./scaffold.js";
 import { loadContext, loadContextFromStdin } from "./context.js";
 import { rlmLoop } from "./rlm.js";
 import { outputResult, buildStats, emitStats } from "./output.js";
 import { createLogger } from "./logger.js";
 import { checkPythonVersion } from "./detect.js";
+import { estimateTokens, validateContextSize } from "./cache.js";
+import { runBatch } from "./batch.js";
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
 Usage:
   rlmx "query" [options]          Run an RLM query
   rlmx init [--dir <path>]       Scaffold rlmx.yaml config
+  rlmx cache [options]           Pre-warm cache or estimate context size
+  rlmx batch <file> [options]    Bulk interrogation from questions file
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -34,6 +39,11 @@ Options:
   --max-tokens <n>        Maximum total tokens per run
   --max-depth <n>         Maximum recursive rlm_query depth
   --ext <list>            File extensions for context dirs (comma-separated)
+  --thinking <level>      Thinking level: minimal, low, medium, high (Gemini 3)
+  --cache                 Enable cache mode (full context in system prompt for provider caching)
+  --estimate              Show context size and cost estimate without caching (cache command)
+  --parallel <n>          Concurrent questions for batch command (default: 1)
+  --batch-api             Use Gemini Batch API for 50% cost reduction (batch command)
 
 Config:
   rlmx.yaml               Single config file (run "rlmx init" to create)
@@ -46,11 +56,15 @@ Examples:
   rlmx "Quick question" --max-cost 0.10 --max-tokens 5000
   rlmx init --dir ./my-project
   echo "data" | rlmx "Analyze this" --log run.jsonl
+  rlmx cache --context ./docs/ --estimate
+  rlmx cache --context ./docs/
+  rlmx batch questions.txt --context ./docs/ --cache --max-cost 1.00
+  rlmx batch questions.txt --context ./src/ --max-iterations 3
 `;
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -64,6 +78,12 @@ interface CliOptions {
   maxTokens: number | null;
   maxDepth: number | null;
   ext: string[] | null;
+  thinking: ThinkingLevel | null;
+  cache: boolean;
+  estimate: boolean;
+  batchFile: string | null;
+  parallel: number;
+  batchApi: boolean;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -85,6 +105,11 @@ function parseCliArgs(args: string[]): CliOptions {
       "max-tokens": { type: "string" },
       "max-depth": { type: "string" },
       ext: { type: "string" },
+      thinking: { type: "string" },
+      cache: { type: "boolean", default: false },
+      estimate: { type: "boolean", default: false },
+      parallel: { type: "string", default: "1" },
+      "batch-api": { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -95,7 +120,8 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "help", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null,
+      maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
+      batchFile: null, parallel: 1, batchApi: false,
     };
   }
 
@@ -104,12 +130,17 @@ function parseCliArgs(args: string[]): CliOptions {
       query: null, command: "version", context: null, output: "text",
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
-      maxDepth: null, ext: null,
+      maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
+      batchFile: null, parallel: 1, batchApi: false,
     };
   }
 
-  const command = positionals[0] === "init" ? "init" : "query";
+  const command = positionals[0] === "init" ? "init"
+    : positionals[0] === "cache" ? "cache"
+    : positionals[0] === "batch" ? "batch"
+    : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
+  const batchFile = command === "batch" ? positionals[1] ?? null : null;
   const dir = (values.dir as string) || process.cwd();
 
   const outputMode = values.output as string;
@@ -122,6 +153,13 @@ function parseCliArgs(args: string[]): CliOptions {
   const toolsRaw = values.tools as string | undefined;
   if (toolsRaw && !["core", "standard", "full"].includes(toolsRaw)) {
     console.error(`Error: --tools must be core, standard, or full (got "${toolsRaw}")`);
+    process.exit(1);
+  }
+
+  // Validate --thinking
+  const thinkingRaw = values.thinking as string | undefined;
+  if (thinkingRaw && !isValidThinkingLevel(thinkingRaw)) {
+    console.error(`Error: --thinking must be minimal, low, medium, or high (got "${thinkingRaw}")`);
     process.exit(1);
   }
 
@@ -147,6 +185,12 @@ function parseCliArgs(args: string[]): CliOptions {
     maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"] as string, 10) : null,
     maxDepth: values["max-depth"] ? parseInt(values["max-depth"] as string, 10) : null,
     ext,
+    thinking: (thinkingRaw as ThinkingLevel) || null,
+    cache: values.cache as boolean,
+    estimate: values.estimate as boolean,
+    batchFile,
+    parallel: parseInt(values.parallel as string, 10) || 1,
+    batchApi: values["batch-api"] as boolean,
   };
 }
 
@@ -194,9 +238,22 @@ async function runQuery(opts: CliOptions): Promise<void> {
   const config = await loadConfig(configDir);
 
   // Apply CLI overrides to config
+  if (opts.thinking) {
+    config.gemini.thinkingLevel = opts.thinking;
+  }
+  if (opts.cache) {
+    config.cache.enabled = true;
+  }
   if (opts.tools) {
     config.toolsLevel = opts.tools;
   }
+
+  // Warn about future flags
+  const futureWarnings = checkFutureFlags(config.gemini);
+  for (const w of futureWarnings) {
+    console.error(`rlmx: ${w}`);
+  }
+
   if (opts.maxCost !== null) {
     config.budget.maxCost = opts.maxCost;
   }
@@ -245,6 +302,8 @@ async function runQuery(opts: CliOptions): Promise<void> {
     timeout: opts.timeout,
     verbose: opts.verbose,
     output: opts.output,
+    cache: opts.cache,
+    logger,
   });
 
   const timeMs = Date.now() - startTime;
@@ -267,6 +326,13 @@ async function runQuery(opts: CliOptions): Promise<void> {
       tools_level: config.toolsLevel,
       budget_hit: result.budgetHit,
       run_id: logger.runId,
+      cache_enabled: opts.cache,
+      thinking_level: config.gemini.thinkingLevel ?? undefined,
+      gemini_batteries_used: result.geminiBatteriesUsed,
+      thought_signatures_circulated: result.geminiCounts?.thoughtSignatures,
+      web_search_calls: result.geminiCounts?.webSearch,
+      fetch_url_calls: result.geminiCounts?.fetchUrl,
+      code_executions_server_side: result.geminiCounts?.codeExecutionsServerSide,
     });
     // For JSON output, stats are included in the response
     if (opts.output === "json") {
@@ -278,6 +344,145 @@ async function runQuery(opts: CliOptions): Promise<void> {
   } else {
     outputResult(result, opts.output);
   }
+}
+
+// Rough cost estimate per 1M input tokens by provider (USD)
+const COST_PER_1M_INPUT: Record<string, number> = {
+  anthropic: 3.0,    // Claude Sonnet ~$3/M input
+  openai: 2.5,       // GPT-4o ~$2.50/M input
+  google: 0.075,     // Gemini 2.0 Flash — very cheap
+  "amazon-bedrock": 3.0,
+};
+
+async function runCache(opts: CliOptions): Promise<void> {
+  if (!opts.context) {
+    console.error("Error: --context is required for the cache command.");
+    console.error("Usage: rlmx cache --context <path> [--estimate]");
+    process.exit(1);
+  }
+
+  // Load config
+  const configDir = process.cwd();
+  const config = await loadConfig(configDir);
+
+  // Apply CLI overrides
+  if (opts.tools) {
+    config.toolsLevel = opts.tools;
+  }
+
+  const provider = config.model.provider;
+  const model = config.model.model;
+
+  // Load context
+  const contextPath = resolve(opts.context);
+  const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+  const context = await loadContext(contextPath, contextOpts);
+
+  // Validate context size
+  const validation = validateContextSize(context, provider);
+
+  if (!validation.valid) {
+    console.error(`Error: ${validation.message}`);
+    process.exit(1);
+  }
+
+  // Estimate cost
+  const costPer1M = COST_PER_1M_INPUT[provider] ?? 3.0;
+  const estimatedCost = (validation.estimatedTokens / 1_000_000) * costPer1M;
+  const ttl = config.cache.ttl ?? (config.cache.retention === "long" ? 3600 : 300);
+
+  if (opts.estimate) {
+    // Print stats and exit — no actual caching
+    console.log("rlmx cache estimate");
+    console.log("---");
+    console.log(`  context:          ${opts.context}`);
+    console.log(`  metadata:         ${context.metadata}`);
+    console.log(`  estimated tokens: ${validation.estimatedTokens.toLocaleString()}`);
+    console.log(`  provider limit:   ${validation.limit.toLocaleString()} tokens`);
+    console.log(`  utilization:      ${((validation.estimatedTokens / validation.limit) * 100).toFixed(1)}%`);
+    console.log(`  provider:         ${provider}`);
+    console.log(`  model:            ${model}`);
+    console.log(`  ttl:              ${ttl}s`);
+    console.log(`  estimated cost:   $${estimatedCost.toFixed(4)}`);
+    return;
+  }
+
+  // Warmup: run a minimal rlmLoop with cache enabled
+  console.error(`rlmx: warming cache for ${opts.context} (~${validation.estimatedTokens.toLocaleString()} tokens)`);
+
+  config.cache.enabled = true;
+
+  try {
+    await rlmLoop("warmup", context, config, {
+      maxIterations: 1,
+      timeout: opts.timeout,
+      verbose: opts.verbose,
+      output: "text",
+      cache: true,
+    });
+  } catch {
+    // Warmup may produce a minimal/empty result — that's OK
+    // The goal is just to prime the provider's cache
+  }
+
+  console.error("rlmx: cache warmup complete");
+  console.error(`  provider:         ${provider}`);
+  console.error(`  model:            ${model}`);
+  console.error(`  estimated tokens: ${validation.estimatedTokens.toLocaleString()}`);
+  console.error(`  ttl:              ${ttl}s`);
+  console.error(`  estimated cost:   $${estimatedCost.toFixed(4)}`);
+}
+
+async function runBatchCommand(opts: CliOptions): Promise<void> {
+  if (!opts.batchFile) {
+    console.error("Error: batch command requires a questions file path.");
+    console.error("Usage: rlmx batch <questions.txt> [--context <path>] [--max-cost <n>]");
+    process.exit(1);
+  }
+
+  const configDir = process.cwd();
+
+  // Load config
+  const config = await loadConfig(configDir);
+
+  // Apply CLI overrides to config
+  config.cache.enabled = true; // batch always uses cache
+  if (opts.tools) {
+    config.toolsLevel = opts.tools;
+  }
+  if (opts.maxCost !== null) {
+    config.budget.maxCost = opts.maxCost;
+  }
+  if (opts.maxTokens !== null) {
+    config.budget.maxTokens = opts.maxTokens;
+  }
+  if (opts.maxDepth !== null) {
+    config.budget.maxDepth = opts.maxDepth;
+  }
+
+  // Load context if provided
+  let context = null;
+  if (opts.context) {
+    const contextPath = resolve(opts.context);
+    const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+    context = await loadContext(contextPath, contextOpts);
+    if (opts.verbose) {
+      console.error(`rlmx batch: loaded context — ${context.metadata}`);
+    }
+  }
+
+  if (opts.verbose) {
+    console.error(`rlmx batch: processing ${opts.batchFile}`);
+  }
+
+  await runBatch(resolve(opts.batchFile), context, config, {
+    maxIterations: opts.maxIterations,
+    timeout: opts.timeout,
+    verbose: opts.verbose,
+    cache: true,
+    maxCost: opts.maxCost ?? undefined,
+    parallel: opts.parallel,
+  });
 }
 
 async function main(): Promise<void> {
@@ -299,6 +504,14 @@ async function main(): Promise<void> {
 
     case "init":
       await runInit(opts.dir);
+      break;
+
+    case "cache":
+      await runCache(opts);
+      break;
+
+    case "batch":
+      await runBatchCommand(opts);
       break;
 
     case "query":

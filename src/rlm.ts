@@ -11,14 +11,18 @@
 
 import type { RlmxConfig, ToolDef } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
+import { buildCachedSystemPrompt, computeContentHash, buildSessionId, estimateTokens } from "./cache.js";
 import { REPL } from "./repl.js";
 import {
   llmComplete,
   handleLLMRequest,
   createUsage,
+  createGeminiCallCounts,
   mergeUsage,
   type ChatMessage,
   type UsageStats,
+  type CacheLLMConfig,
+  type GeminiCallCounts,
 } from "./llm.js";
 import {
   extractCodeBlocks,
@@ -28,6 +32,8 @@ import {
 } from "./parser.js";
 import { emitStreamEvent, logVerbose, type RLMResult } from "./output.js";
 import { BudgetTracker } from "./budget.js";
+import { isGoogleProvider } from "./gemini.js";
+import type { Logger } from "./logger.js";
 
 /** Options for the RLM loop. */
 export interface RLMOptions {
@@ -35,6 +41,8 @@ export interface RLMOptions {
   timeout: number;
   verbose: boolean;
   output: "text" | "json" | "stream";
+  cache: boolean;
+  logger?: Logger;
 }
 
 const DEFAULT_OPTIONS: RLMOptions = {
@@ -42,7 +50,16 @@ const DEFAULT_OPTIONS: RLMOptions = {
   timeout: 300_000,
   verbose: false,
   output: "text",
+  cache: false,
 };
+
+/**
+ * Check if structured output mode is active.
+ * Structured output is when output.schema is set and provider is Google (Gemini).
+ */
+function isStructuredOutputMode(config: RlmxConfig): boolean {
+  return config.output.schema !== null && isGoogleProvider(config.model.provider);
+}
 
 /**
  * Build the system prompt from config, tools, criteria, and context metadata.
@@ -155,11 +172,35 @@ export async function rlmLoop(
 ): Promise<RLMResult> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const usage = createUsage();
+  const geminiCounts = createGeminiCallCounts();
   const budget = new BudgetTracker(config.budget);
 
-  // Build system prompt
-  const systemPrompt = buildSystemPrompt(config, context);
+  // Build system prompt — cache mode embeds full context, normal mode uses metadata only
+  const systemPrompt = opts.cache
+    ? buildCachedSystemPrompt(config, context)
+    : buildSystemPrompt(config, context);
   const contextMetadata = buildContextMetadata(context);
+
+  // Build cache config for LLM calls (passed through to pi/ai completeSimple)
+  let cacheConfig: CacheLLMConfig | undefined;
+  if (opts.cache && context) {
+    const contentHash = computeContentHash(context);
+    const sessionId = buildSessionId(config.cache.sessionPrefix, contentHash);
+    cacheConfig = {
+      enabled: true,
+      retention: config.cache.retention,
+      sessionId,
+    };
+
+    // Emit cache_init log event
+    if (opts.logger) {
+      opts.logger.cacheInit({
+        contentHash,
+        sessionId,
+        estimatedTokens: estimateTokens(context),
+      });
+    }
+  }
 
   // Prepare abort controller for timeout
   const abortController = new AbortController();
@@ -180,6 +221,8 @@ export async function rlmLoop(
     await repl.start({
       context: replContext as any,
       tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
+      loadGeminiBatteries: isGoogleProvider(config.model.provider) && (config.toolsLevel === "standard" || config.toolsLevel === "full"),
+      toolsLevel: config.toolsLevel,
     });
 
     // Set up LLM request handler for REPL IPC
@@ -188,7 +231,8 @@ export async function rlmLoop(
         request,
         config,
         usage,
-        abortController.signal
+        abortController.signal,
+        geminiCounts
       );
     });
 
@@ -222,9 +266,18 @@ export async function rlmLoop(
       // Call LLM
       const response = await llmComplete(messages, config.model, {
         signal: abortController.signal,
+        cacheConfig,
+        thinkingLevel: config.gemini.thinkingLevel as any,
+        outputSchema: config.output.schema,
+        geminiConfig: config.gemini,
       });
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
+
+      // Track thought signatures for Gemini stats
+      if (response.thoughtSignatureCount) {
+        geminiCounts.thoughtSignatures += response.thoughtSignatureCount;
+      }
 
       const responseText = response.text;
 
@@ -238,6 +291,16 @@ export async function rlmLoop(
       // Extract code blocks
       const codeBlocks = extractCodeBlocks(responseText);
 
+      // In structured output mode, treat the API response as the final answer (schema-enforced JSON)
+      if (isStructuredOutputMode(config) && codeBlocks.length === 0) {
+        clearTimeout(timeoutHandle);
+        await repl.stop();
+        if (opts.verbose) {
+          logVerbose(iteration, "structured output mode: response is final answer");
+        }
+        return buildResult(responseText, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
+      }
+
       // Check for FINAL signal in the text (outside code blocks)
       const finalSignal = detectFinal(responseText, codeBlocks);
 
@@ -247,7 +310,7 @@ export async function rlmLoop(
 
         if (finalSignal.type === "final") {
           await repl.stop();
-          return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit);
+          return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
         }
         // FINAL_VAR without code — get variable value before stopping REPL
         const varResult = await getVariableFromRepl(repl, finalSignal.value);
@@ -257,7 +320,9 @@ export async function rlmLoop(
           usage,
           iteration + 1,
           config,
-          budget.getState().budgetHit
+          budget.getState().budgetHit,
+          geminiCounts,
+          repl.getGeminiBatteriesUsed()
         );
       }
 
@@ -289,8 +354,29 @@ export async function rlmLoop(
             usage,
             iteration + 1,
             config,
-            budget.getState().budgetHit
+            budget.getState().budgetHit,
+            geminiCounts,
+            repl.getGeminiBatteriesUsed()
           );
+        }
+      }
+
+      // Handle server-side code execution results from Gemini (GROUP 5)
+      // These are executed by Gemini's code_execution tool and returned in the response
+      if (response.codeExecutionResults && response.codeExecutionResults.length > 0) {
+        if (opts.verbose) {
+          logVerbose(iteration, `received ${response.codeExecutionResults.length} server-side execution results`);
+        }
+
+        // Treat server execution results as execution results for the conversation
+        for (const result of response.codeExecutionResults) {
+          executions.push({
+            code: result.code,
+            stdout: result.output,
+            stderr: result.outcome === "OUTCOME_OK" ? "" : `Execution failed: ${result.outcome}`,
+            variables: [],
+            error: result.outcome === "OUTCOME_OK" ? undefined : `${result.outcome}`,
+          });
         }
       }
 
@@ -308,7 +394,9 @@ export async function rlmLoop(
             usage,
             iteration + 1,
             config,
-            budget.getState().budgetHit
+            budget.getState().budgetHit,
+            geminiCounts,
+            repl.getGeminiBatteriesUsed()
           );
         }
         // Try getting variable directly
@@ -323,7 +411,9 @@ export async function rlmLoop(
             usage,
             iteration + 1,
             config,
-            budget.getState().budgetHit
+            budget.getState().budgetHit,
+            geminiCounts,
+            repl.getGeminiBatteriesUsed()
           );
         }
       }
@@ -332,7 +422,7 @@ export async function rlmLoop(
       if (finalSignal && finalSignal.type === "final") {
         clearTimeout(timeoutHandle);
         await repl.stop();
-        return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit);
+        return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
       }
 
       // Format execution results and append to history
@@ -382,7 +472,7 @@ export async function rlmLoop(
       logVerbose(opts.maxIterations, "max iterations reached, forcing final answer");
     }
 
-    const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal);
+    const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal, cacheConfig);
     clearTimeout(timeoutHandle);
     await repl.stop();
 
@@ -391,7 +481,9 @@ export async function rlmLoop(
       usage,
       opts.maxIterations,
       config,
-      budget.getState().budgetHit
+      budget.getState().budgetHit,
+      geminiCounts,
+      repl.getGeminiBatteriesUsed()
     );
   } catch (err: any) {
     clearTimeout(timeoutHandle);
@@ -403,7 +495,9 @@ export async function rlmLoop(
         usage,
         0,
         config,
-        budget.getState().budgetHit
+        budget.getState().budgetHit,
+        geminiCounts,
+        repl.getGeminiBatteriesUsed()
       );
     }
 
@@ -418,7 +512,8 @@ async function forceFinalAnswer(
   messages: ChatMessage[],
   config: RlmxConfig,
   usage: UsageStats,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cacheConfig?: CacheLLMConfig
 ): Promise<string> {
   const forceMessages: ChatMessage[] = [
     ...messages,
@@ -429,7 +524,13 @@ async function forceFinalAnswer(
     },
   ];
 
-  const response = await llmComplete(forceMessages, config.model, { signal });
+  const response = await llmComplete(forceMessages, config.model, {
+    signal,
+    cacheConfig,
+    thinkingLevel: config.gemini.thinkingLevel as any,
+    outputSchema: config.output.schema,
+    geminiConfig: config.gemini,
+  });
   mergeUsage(usage, response.usage);
   return response.text;
 }
@@ -458,7 +559,9 @@ function buildResult(
   usage: UsageStats,
   iterations: number,
   config: RlmxConfig,
-  budgetHit?: string | null
+  budgetHit?: string | null,
+  geminiCounts?: GeminiCallCounts,
+  geminiBatteriesUsed?: string[]
 ): RLMResult {
   // Extract file references from the answer (paths like docs/foo/bar.md)
   const refRegex = /(?:^|[\s(["'])([a-zA-Z0-9_./-]+\.(?:md|txt|py|ts|js|json))/gm;
@@ -472,7 +575,7 @@ function buildResult(
     }
   }
 
-  return {
+  const result: RLMResult = {
     answer,
     references,
     usage,
@@ -480,4 +583,13 @@ function buildResult(
     model: `${config.model.provider}/${config.model.model}`,
     budgetHit: budgetHit ?? null,
   };
+
+  if (geminiCounts) {
+    result.geminiCounts = geminiCounts;
+  }
+  if (geminiBatteriesUsed && geminiBatteriesUsed.length > 0) {
+    result.geminiBatteriesUsed = geminiBatteriesUsed;
+  }
+
+  return result;
 }
