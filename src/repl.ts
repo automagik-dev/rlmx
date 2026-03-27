@@ -23,8 +23,8 @@ const REPL_SERVER_PATH = join(__dirname, "..", "python", "repl_server.py");
 
 /** Options passed to REPL.start() */
 export interface REPLStartOptions {
-  /** Context to inject (string, list, or dict serialized as JSON string). */
-  context?: string | string[] | Record<string, unknown>;
+  /** Context to inject (string, array, or dict — arrays/dicts are JSON-serialized). */
+  context?: string | unknown[] | Record<string, unknown>;
   /** Custom tools to inject as Python code strings (name -> code). */
   tools?: Record<string, string>;
   /** Python executable path (default: "python3"). */
@@ -238,9 +238,10 @@ export class REPL {
             if (this.llmHandler) {
               try {
                 results = await this.llmHandler(llmReq);
-              } catch (err) {
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
                 results = llmReq.prompts.map(
-                  () => `Error: LLM handler failed — ${err}`
+                  () => `Error: LLM handler failed — ${msg}`
                 );
               }
             } else {
@@ -261,7 +262,7 @@ export class REPL {
   }
 
   private async _injectContext(
-    context: string | string[] | Record<string, unknown>
+    context: string | unknown[] | Record<string, unknown>
   ): Promise<void> {
     let value: string;
     let valueType: "str" | "list" | "dict";

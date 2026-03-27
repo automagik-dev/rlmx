@@ -6,7 +6,7 @@
  */
 
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
-import type { Message, UserMessage, AssistantMessage as PiAssistantMessage } from "@mariozechner/pi-ai";
+import type { Message, UserMessage, AssistantMessage as PiAssistantMessage, TextContent, KnownProvider } from "@mariozechner/pi-ai";
 import { spawn } from "node:child_process";
 import type { RlmxConfig, ModelConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
@@ -50,12 +50,12 @@ export interface LLMResponse {
  * Resolve a pi/ai model, trying the exact ID first, then stripping the date suffix.
  */
 function resolveModel(provider: string, modelId: string) {
-  let model = getModel(provider as any, modelId);
+  let model = getModel(provider as KnownProvider, modelId as never);
   if (!model) {
     // Try stripping date suffix (e.g., "claude-sonnet-4-5-20250514" -> "claude-sonnet-4-5")
     const stripped = modelId.replace(/-\d{8}$/, "");
     if (stripped !== modelId) {
-      model = getModel(provider as any, stripped);
+      model = getModel(provider as KnownProvider, stripped as never);
     }
   }
   if (!model) {
@@ -120,8 +120,8 @@ export async function llmComplete(
   );
 
   const text = response.content
-    .filter((block: any) => block.type === "text")
-    .map((block: any) => block.text)
+    .filter((block): block is TextContent => block.type === "text")
+    .map((block) => block.text)
     .join("");
 
   return {

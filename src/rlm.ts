@@ -176,7 +176,7 @@ export async function rlmLoop(
     }
 
     await repl.start({
-      context: replContext as any,
+      context: replContext,
       tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
     });
 
@@ -379,11 +379,14 @@ export async function rlmLoop(
       opts.maxIterations,
       config
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     clearTimeout(timeoutHandle);
     await repl.stop().catch(() => {});
 
-    if (err.name === "AbortError" || abortController.signal.aborted) {
+    if (
+      (err instanceof Error && err.name === "AbortError") ||
+      abortController.signal.aborted
+    ) {
       return buildResult(
         "Error: RLM query timed out",
         usage,
