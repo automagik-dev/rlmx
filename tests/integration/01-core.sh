@@ -110,9 +110,9 @@ assert '4' in answer, f'answer does not contain 4: {answer!r}'
   fi
 fi
 
-# ── Test 4: rlmx with --context loads source files ───────────
-echo "Test 4: rlmx with --context ./src/ loads context items"
-CTX_OUTPUT=$($CLI "List the files you see in context" --context ./src/ --output json --max-iterations 2 2>/dev/null)
+# ── Test 4: rlmx with --context + --tools standard ───────────
+echo "Test 4: rlmx with --context ./src/ --tools standard loads context + batteries"
+CTX_OUTPUT=$($CLI "List the files you see in context" --context ./src/ --tools standard --output json --max-iterations 2 2>/dev/null)
 if echo "$CTX_OUTPUT" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)

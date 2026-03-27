@@ -246,6 +246,7 @@ export async function rlmLoop(
     ];
 
     // Iteration loop
+    let actualIterations = 0;
     for (let iteration = 0; iteration < opts.maxIterations; iteration++) {
       // Check timeout
       if (abortController.signal.aborted) {
@@ -258,6 +259,7 @@ export async function rlmLoop(
         if (opts.verbose) logVerbose(iteration, `budget exceeded: ${budget.getState().budgetHit}`);
         break;
       }
+      actualIterations = iteration + 1;
 
       if (opts.verbose) {
         logVerbose(iteration, "calling LLM...");
@@ -468,9 +470,10 @@ export async function rlmLoop(
       }
     }
 
-    // Max iterations reached — force a final answer
+    // Loop exited — force a final answer
     if (opts.verbose) {
-      logVerbose(opts.maxIterations, "max iterations reached, forcing final answer");
+      const reason = budget.isExceeded() ? "budget exceeded" : abortController.signal.aborted ? "timeout" : "max iterations reached";
+      logVerbose(actualIterations, `${reason}, forcing final answer`);
     }
 
     const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal, cacheConfig);
@@ -480,7 +483,7 @@ export async function rlmLoop(
     return buildResult(
       forcedResult,
       usage,
-      opts.maxIterations,
+      actualIterations,
       config,
       budget.getState().budgetHit,
       geminiCounts,
