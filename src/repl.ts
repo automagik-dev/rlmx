@@ -26,10 +26,10 @@ import type { Logger } from "./logger.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Default paths relative to dist/
-const REPL_SERVER_PATH = join(__dirname, "..", "python", "repl_server.py");
-const BATTERIES_PATH = join(__dirname, "..", "python", "batteries.py");
-const GEMINI_BATTERIES_PATH = join(__dirname, "..", "python", "gemini_batteries.py");
+// Default paths — __dirname is dist/src/ when compiled, python/ is at repo root (../../python/)
+const REPL_SERVER_PATH = join(__dirname, "..", "..", "python", "repl_server.py");
+const BATTERIES_PATH = join(__dirname, "..", "..", "python", "batteries.py");
+const GEMINI_BATTERIES_PATH = join(__dirname, "..", "..", "python", "gemini_batteries.py");
 
 /** Battery function names — tracked for stats. */
 const BATTERY_FUNCTION_NAMES = [

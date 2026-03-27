@@ -277,7 +277,11 @@ async function runQuery(opts: CliOptions): Promise<void> {
   let context = null;
   if (opts.context) {
     const contextPath = resolve(opts.context);
-    const contextOpts = opts.ext ? { extensions: opts.ext } : undefined;
+    const contextOpts = opts.ext
+      ? { extensions: opts.ext }
+      : config.contextConfig
+        ? { extensions: config.contextConfig.extensions, exclude: config.contextConfig.exclude }
+        : undefined;
     context = await loadContext(contextPath, contextOpts);
     if (opts.verbose) {
       console.error(`rlmx: loaded context — ${context.metadata}`);
