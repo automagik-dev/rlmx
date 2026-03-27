@@ -6,27 +6,49 @@
  */
 
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
-import type { Message, UserMessage, AssistantMessage as PiAssistantMessage } from "@mariozechner/pi-ai";
+import type { Message, UserMessage, AssistantMessage as PiAssistantMessage, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { spawn } from "node:child_process";
-import type { RlmxConfig, ModelConfig } from "./config.js";
+import type { RlmxConfig, ModelConfig, GeminiConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
+import type { Logger } from "./logger.js";
+import { buildGeminiOnPayload, isGoogleProvider, type ThinkingLevel } from "./gemini.js";
 
 /** Token usage tracking. */
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalCost: number;
   llmCalls: number;
 }
 
 /** Create a fresh usage tracker. */
 export function createUsage(): UsageStats {
-  return { inputTokens: 0, outputTokens: 0, llmCalls: 0 };
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalCost: 0, llmCalls: 0 };
+}
+
+/** Gemini-specific call counts tracked across an RLM run. */
+export interface GeminiCallCounts {
+  webSearch: number;
+  fetchUrl: number;
+  generateImage: number;
+  codeExecutionsServerSide: number;
+  thoughtSignatures: number;
+}
+
+/** Create a fresh Gemini call counter. */
+export function createGeminiCallCounts(): GeminiCallCounts {
+  return { webSearch: 0, fetchUrl: 0, generateImage: 0, codeExecutionsServerSide: 0, thoughtSignatures: 0 };
 }
 
 /** Merge child usage into parent. */
 export function mergeUsage(parent: UsageStats, child: UsageStats): void {
   parent.inputTokens += child.inputTokens;
   parent.outputTokens += child.outputTokens;
+  parent.cacheReadTokens += child.cacheReadTokens;
+  parent.cacheWriteTokens += child.cacheWriteTokens;
+  parent.totalCost += child.totalCost;
   parent.llmCalls += child.llmCalls;
 }
 
@@ -38,12 +60,30 @@ export interface ChatMessage {
   piMessage?: PiAssistantMessage;
 }
 
+/** Cache config passed through to pi/ai completeSimple. */
+export interface CacheLLMConfig {
+  enabled: boolean;
+  retention: "short" | "long";
+  sessionId: string;
+}
+
+/** Code execution result from Gemini (GROUP 5). */
+export interface CodeExecutionResult {
+  code: string;
+  outcome: "OUTCOME_OK" | "OUTCOME_FAILED" | "OUTCOME_DEADLINE_EXCEEDED";
+  output: string;
+}
+
 /** Response from a single LLM call. */
 export interface LLMResponse {
   text: string;
   usage: UsageStats;
   /** Original pi/ai AssistantMessage for multi-turn conversation fidelity. */
   piMessage?: PiAssistantMessage;
+  /** Count of thought signatures in response (GROUP 2: multi-turn quality tracking). */
+  thoughtSignatureCount?: number;
+  /** Code execution results from Gemini (GROUP 5). */
+  codeExecutionResults?: CodeExecutionResult[];
 }
 
 /**
@@ -69,13 +109,24 @@ function resolveModel(provider: string, modelId: string) {
 
 /**
  * Call pi/ai completeSimple with messages.
+ * Tracks cost and time_ms per call. Optionally emits to a Logger.
  */
 export async function llmComplete(
   messages: ChatMessage[],
   modelConfig: ModelConfig,
-  options?: { maxTokens?: number; signal?: AbortSignal }
+  options?: {
+    maxTokens?: number;
+    signal?: AbortSignal;
+    logger?: Logger;
+    iteration?: number;
+    cacheConfig?: CacheLLMConfig;
+    thinkingLevel?: ThinkingLevel | null;
+    outputSchema?: Record<string, unknown> | null;
+    geminiConfig?: GeminiConfig;
+  }
 ): Promise<LLMResponse> {
   const model = resolveModel(modelConfig.provider, modelConfig.model);
+  const startTime = Date.now();
 
   const systemPrompt = messages.find((m) => m.role === "system")?.content;
   const piMessages: Message[] = messages
@@ -107,31 +158,103 @@ export async function llmComplete(
       } satisfies PiAssistantMessage;
     });
 
+  // Build cache options for pi/ai when cache is enabled
+  const cacheOpts = options?.cacheConfig?.enabled
+    ? {
+        cacheRetention: options.cacheConfig.retention,
+        sessionId: options.cacheConfig.sessionId,
+      }
+    : {};
+
+  // Build pi/ai options with thinking level and onPayload hook
+  const piOptions: SimpleStreamOptions = {
+    maxTokens: options?.maxTokens ?? 16384,
+    signal: options?.signal,
+    ...cacheOpts,
+  };
+
+  // Add thinking level for Gemini
+  if (options?.thinkingLevel) {
+    piOptions.reasoning = options.thinkingLevel;
+  }
+
+  // Build onPayload hook for Gemini-specific features (media resolution, structured outputs, tools, etc.)
+  if (isGoogleProvider(modelConfig.provider) && options?.geminiConfig) {
+    const onPayload = buildGeminiOnPayload(
+      options.geminiConfig,
+      modelConfig.provider,
+      options?.outputSchema
+    );
+    if (onPayload) {
+      piOptions.onPayload = onPayload;
+    }
+  }
+
   const response = await completeSimple(
     model,
     {
       systemPrompt,
       messages: piMessages,
     },
-    {
-      maxTokens: options?.maxTokens ?? 16384,
-      signal: options?.signal,
-    }
+    piOptions
   );
+
+  const timeMs = Date.now() - startTime;
+  const inputTokens = response.usage?.input ?? 0;
+  const outputTokens = response.usage?.output ?? 0;
+  const cacheReadTokens = response.usage?.cacheRead ?? 0;
+  const cacheWriteTokens = response.usage?.cacheWrite ?? 0;
+  const cost = (response.usage as any)?.cost?.total ?? 0;
 
   const text = response.content
     .filter((block: any) => block.type === "text")
     .map((block: any) => block.text)
     .join("");
 
+  // Count thought signatures in response for GROUP 2 verification
+  // These signatures enable multi-turn quality by circulating reasoning context
+  const thoughtSignatureCount = (response.content ?? []).reduce((count: number, block: any) => {
+    if (block.thinkingSignature || block.textSignature) count++;
+    return count;
+  }, 0);
+
+  // Extract code execution results from Gemini (GROUP 5)
+  // When codeExecution tool is enabled, Gemini returns executionResult blocks
+  const codeExecutionResults: CodeExecutionResult[] = [];
+  for (const block of response.content ?? []) {
+    if ((block as any).type === "executionResult") {
+      codeExecutionResults.push({
+        code: (block as any).code ?? "",
+        outcome: (block as any).outcome ?? "OUTCOME_FAILED",
+        output: (block as any).output ?? "",
+      });
+    }
+  }
+
+  // Emit to logger if provided
+  if (options?.logger) {
+    options.logger.llmCall({
+      iteration: options.iteration ?? -1,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cost,
+      time_ms: timeMs,
+    });
+  }
+
   return {
     text,
     usage: {
-      inputTokens: response.usage?.input ?? 0,
-      outputTokens: response.usage?.output ?? 0,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      totalCost: cost,
       llmCalls: 1,
     },
     piMessage: response,
+    thoughtSignatureCount,
+    codeExecutionResults: codeExecutionResults.length > 0 ? codeExecutionResults : undefined,
   };
 }
 
@@ -254,12 +377,14 @@ export async function rlmQueryBatched(
 /**
  * Handle an LLM IPC request from the Python REPL.
  * Routes to the appropriate handler based on request_type.
+ * When geminiCounts is provided, increments Gemini-specific call counters.
  */
 export async function handleLLMRequest(
   request: LLMRequest,
   config: RlmxConfig,
   usage: UsageStats,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  geminiCounts?: GeminiCallCounts
 ): Promise<string[]> {
   const subCallModel: ModelConfig = config.model.subCallModel
     ? { ...config.model, model: config.model.subCallModel }
@@ -301,6 +426,65 @@ export async function handleLLMRequest(
         signal
       );
       return results;
+    }
+
+    case "web_search": {
+      if (!isGoogleProvider(config.model.provider)) {
+        return [
+          `Error: web_search() requires provider: google. Current provider: ${config.model.provider}`,
+        ];
+      }
+      if (geminiCounts) geminiCounts.webSearch++;
+      const wsResp = await llmComplete(
+        [{ role: "user", content: request.prompts[0] }],
+        config.model,
+        {
+          signal,
+          geminiConfig: { ...config.gemini, googleSearch: true },
+        }
+      );
+      mergeUsage(usage, wsResp.usage);
+      return [wsResp.text];
+    }
+
+    case "fetch_url": {
+      if (!isGoogleProvider(config.model.provider)) {
+        return [
+          `Error: fetch_url() requires provider: google. Current provider: ${config.model.provider}`,
+        ];
+      }
+      if (geminiCounts) geminiCounts.fetchUrl++;
+      const fuResp = await llmComplete(
+        [{ role: "user", content: `Fetch and return the content from: ${request.prompts[0]}` }],
+        config.model,
+        {
+          signal,
+          geminiConfig: { ...config.gemini, urlContext: true },
+        }
+      );
+      mergeUsage(usage, fuResp.usage);
+      return [fuResp.text];
+    }
+
+    case "generate_image": {
+      if (!isGoogleProvider(config.model.provider)) {
+        return [
+          `Error: generate_image() requires provider: google. Current provider: ${config.model.provider}`,
+        ];
+      }
+      if (geminiCounts) geminiCounts.generateImage++;
+      // Image generation via Gemini: send prompt to model with image generation instruction.
+      // The model returns a text description or URL depending on capabilities.
+      const igResp = await llmComplete(
+        [{ role: "user", content: `Generate an image based on this description: ${request.prompts[0]}` }],
+        config.model,
+        {
+          signal,
+          geminiConfig: config.gemini,
+        }
+      );
+      mergeUsage(usage, igResp.usage);
+      return [igResp.text];
     }
 
     default:

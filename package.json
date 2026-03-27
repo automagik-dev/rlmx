@@ -1,26 +1,30 @@
 {
-  "name": "rlmx",
-  "version": "0.1.0",
+  "name": "@namastex888/rlmx",
+  "version": "0.4.0",
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "bin": {
-    "rlmx": "dist/cli.js"
+    "rlmx": "dist/src/cli.js"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
   "files": [
-    "dist",
-    "python/*.py"
+    "dist/src",
+    "python/*.py",
+    "examples"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "node --test dist/tests/*.test.js"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.62.0"
+    "@mariozechner/pi-ai": "0.62.0",
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   },
@@ -38,6 +42,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/automagik/rlmx.git"
+    "url": "git+https://github.com/namastex888/rlmx.git"
   }
 }

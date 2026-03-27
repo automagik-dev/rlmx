@@ -12,13 +12,41 @@ export interface LoadedContext {
   metadata: string;
 }
 
+export interface CollectOptions {
+  extensions: string[];   // e.g. [".md", ".txt", ".py"]
+  exclude: string[];      // e.g. ["node_modules", ".git", "dist", "*.log"]
+}
+
+const DEFAULT_COLLECT_OPTIONS: CollectOptions = {
+  extensions: [".md"],
+  exclude: ["node_modules", ".git", "dist"],
+};
+
+/**
+ * Check if a name matches an exclude pattern.
+ * Supports simple glob: if pattern contains `*`, convert to regex.
+ * Otherwise, exact match on the name.
+ */
+function matchesExclude(name: string, patterns: string[]): boolean {
+  for (const pattern of patterns) {
+    if (pattern.includes("*")) {
+      // Convert glob pattern to regex: escape dots, replace * with .*
+      const regexStr = "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$";
+      if (new RegExp(regexStr).test(name)) return true;
+    } else {
+      if (name === pattern) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Recursively collect files matching a pattern from a directory.
  */
 async function collectFiles(
   dir: string,
   baseDir: string,
-  ext: string = ".md"
+  options: CollectOptions
 ): Promise<ContextItem[]> {
   const items: ContextItem[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
@@ -36,15 +64,24 @@ async function collectFiles(
     }
 
     if (isDir) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-      const subItems = await collectFiles(fullPath, baseDir, ext);
+      // Always skip hidden directories (starting with .)
+      if (entry.name.startsWith(".")) continue;
+      // Skip directories matching exclude patterns
+      if (matchesExclude(entry.name, options.exclude)) continue;
+      const subItems = await collectFiles(fullPath, baseDir, options);
       items.push(...subItems);
-    } else if (isFile && entry.name.endsWith(ext)) {
-      const content = await readFile(fullPath, "utf-8");
-      items.push({
-        path: relative(baseDir, fullPath),
-        content,
-      });
+    } else if (isFile) {
+      // Skip files matching exclude patterns
+      if (matchesExclude(entry.name, options.exclude)) continue;
+      // Check if file matches any of the allowed extensions
+      const matchesExt = options.extensions.some((ext) => entry.name.endsWith(ext));
+      if (matchesExt) {
+        const content = await readFile(fullPath, "utf-8");
+        items.push({
+          path: relative(baseDir, fullPath),
+          content,
+        });
+      }
     }
   }
 
@@ -84,10 +121,17 @@ function generateMetadata(ctx: LoadedContext): string {
 
 /**
  * Load context from a directory path.
- * Recursively reads all .md files.
+ * Recursively reads files matching the configured extensions.
  */
-export async function loadContextFromDir(dirPath: string): Promise<LoadedContext> {
-  const items = await collectFiles(dirPath, dirPath);
+export async function loadContextFromDir(
+  dirPath: string,
+  options?: Partial<CollectOptions>
+): Promise<LoadedContext> {
+  const merged: CollectOptions = {
+    extensions: options?.extensions ?? DEFAULT_COLLECT_OPTIONS.extensions,
+    exclude: options?.exclude ?? DEFAULT_COLLECT_OPTIONS.exclude,
+  };
+  const items = await collectFiles(dirPath, dirPath, merged);
   items.sort((a, b) => a.path.localeCompare(b.path));
 
   const ctx: LoadedContext = {
@@ -159,11 +203,14 @@ export async function loadContextFromStdin(): Promise<LoadedContext> {
 /**
  * Load context from a path (auto-detect file vs directory).
  */
-export async function loadContext(contextPath: string): Promise<LoadedContext> {
+export async function loadContext(
+  contextPath: string,
+  options?: Partial<CollectOptions>
+): Promise<LoadedContext> {
   const info = await stat(contextPath);
 
   if (info.isDirectory()) {
-    return loadContextFromDir(contextPath);
+    return loadContextFromDir(contextPath, options);
   }
   return loadContextFromFile(contextPath);
 }
