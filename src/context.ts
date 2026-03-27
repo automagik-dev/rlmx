@@ -53,14 +53,24 @@ async function collectFiles(
 
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
+
+    // Resolve symlinks: isDirectory/isFile return false for symlinks
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    if (entry.isSymbolicLink()) {
+      const resolved = await stat(fullPath); // stat follows symlinks
+      isDir = resolved.isDirectory();
+      isFile = resolved.isFile();
+    }
+
+    if (isDir) {
       // Always skip hidden directories (starting with .)
       if (entry.name.startsWith(".")) continue;
       // Skip directories matching exclude patterns
       if (matchesExclude(entry.name, options.exclude)) continue;
       const subItems = await collectFiles(fullPath, baseDir, options);
       items.push(...subItems);
-    } else if (entry.isFile()) {
+    } else if (isFile) {
       // Skip files matching exclude patterns
       if (matchesExclude(entry.name, options.exclude)) continue;
       // Check if file matches any of the allowed extensions
