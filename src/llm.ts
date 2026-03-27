@@ -53,6 +53,13 @@ export interface CacheLLMConfig {
   sessionId: string;
 }
 
+/** Code execution result from Gemini (GROUP 5). */
+export interface CodeExecutionResult {
+  code: string;
+  outcome: "OUTCOME_OK" | "OUTCOME_FAILED" | "OUTCOME_DEADLINE_EXCEEDED";
+  output: string;
+}
+
 /** Response from a single LLM call. */
 export interface LLMResponse {
   text: string;
@@ -61,6 +68,8 @@ export interface LLMResponse {
   piMessage?: PiAssistantMessage;
   /** Count of thought signatures in response (GROUP 2: multi-turn quality tracking). */
   thoughtSignatureCount?: number;
+  /** Code execution results from Gemini (GROUP 5). */
+  codeExecutionResults?: CodeExecutionResult[];
 }
 
 /**
@@ -195,6 +204,19 @@ export async function llmComplete(
     return count;
   }, 0);
 
+  // Extract code execution results from Gemini (GROUP 5)
+  // When codeExecution tool is enabled, Gemini returns executionResult blocks
+  const codeExecutionResults: CodeExecutionResult[] = [];
+  for (const block of response.content ?? []) {
+    if ((block as any).type === "executionResult") {
+      codeExecutionResults.push({
+        code: (block as any).code ?? "",
+        outcome: (block as any).outcome ?? "OUTCOME_FAILED",
+        output: (block as any).output ?? "",
+      });
+    }
+  }
+
   // Emit to logger if provided
   if (options?.logger) {
     options.logger.llmCall({
@@ -218,6 +240,7 @@ export async function llmComplete(
     },
     piMessage: response,
     thoughtSignatureCount,
+    codeExecutionResults: codeExecutionResults.length > 0 ? codeExecutionResults : undefined,
   };
 }
 

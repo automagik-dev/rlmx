@@ -348,6 +348,25 @@ export async function rlmLoop(
         }
       }
 
+      // Handle server-side code execution results from Gemini (GROUP 5)
+      // These are executed by Gemini's code_execution tool and returned in the response
+      if (response.codeExecutionResults && response.codeExecutionResults.length > 0) {
+        if (opts.verbose) {
+          logVerbose(iteration, `received ${response.codeExecutionResults.length} server-side execution results`);
+        }
+
+        // Treat server execution results as execution results for the conversation
+        for (const result of response.codeExecutionResults) {
+          executions.push({
+            code: result.code,
+            stdout: result.output,
+            stderr: result.outcome === "OUTCOME_OK" ? "" : `Execution failed: ${result.outcome}`,
+            variables: [],
+            error: result.outcome === "OUTCOME_OK" ? undefined : `${result.outcome}`,
+          });
+        }
+      }
+
       // Check for FINAL_VAR in text after code execution
       if (finalSignal && finalSignal.type === "final_var") {
         // The variable should now exist in the REPL after code execution
