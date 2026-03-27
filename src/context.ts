@@ -25,11 +25,21 @@ async function collectFiles(
 
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
+
+    // Resolve symlinks: isDirectory/isFile return false for symlinks
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    if (entry.isSymbolicLink()) {
+      const resolved = await stat(fullPath); // stat follows symlinks
+      isDir = resolved.isDirectory();
+      isFile = resolved.isFile();
+    }
+
+    if (isDir) {
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
       const subItems = await collectFiles(fullPath, baseDir, ext);
       items.push(...subItems);
-    } else if (entry.isFile() && entry.name.endsWith(ext)) {
+    } else if (isFile && entry.name.endsWith(ext)) {
       const content = await readFile(fullPath, "utf-8");
       items.push({
         path: relative(baseDir, fullPath),
