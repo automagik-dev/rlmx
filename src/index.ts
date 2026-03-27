@@ -38,8 +38,9 @@ export {
   handleLLMRequest,
   createUsage,
   mergeUsage,
+  createGeminiCallCounts,
 } from "./llm.js";
-export type { ChatMessage, LLMResponse, UsageStats, CacheLLMConfig } from "./llm.js";
+export type { ChatMessage, LLMResponse, UsageStats, CacheLLMConfig, GeminiCallCounts } from "./llm.js";
 
 export {
   extractCodeBlocks,

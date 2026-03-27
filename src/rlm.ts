@@ -298,7 +298,7 @@ export async function rlmLoop(
         if (opts.verbose) {
           logVerbose(iteration, "structured output mode: response is final answer");
         }
-        return buildResult(responseText, usage, iteration + 1, config, budget.getState().budgetHit);
+        return buildResult(responseText, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
       }
 
       // Check for FINAL signal in the text (outside code blocks)
@@ -310,7 +310,7 @@ export async function rlmLoop(
 
         if (finalSignal.type === "final") {
           await repl.stop();
-          return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit);
+          return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
         }
         // FINAL_VAR without code — get variable value before stopping REPL
         const varResult = await getVariableFromRepl(repl, finalSignal.value);
@@ -320,7 +320,9 @@ export async function rlmLoop(
           usage,
           iteration + 1,
           config,
-          budget.getState().budgetHit
+          budget.getState().budgetHit,
+          geminiCounts,
+          repl.getGeminiBatteriesUsed()
         );
       }
 
@@ -352,7 +354,9 @@ export async function rlmLoop(
             usage,
             iteration + 1,
             config,
-            budget.getState().budgetHit
+            budget.getState().budgetHit,
+            geminiCounts,
+            repl.getGeminiBatteriesUsed()
           );
         }
       }
@@ -390,7 +394,9 @@ export async function rlmLoop(
             usage,
             iteration + 1,
             config,
-            budget.getState().budgetHit
+            budget.getState().budgetHit,
+            geminiCounts,
+            repl.getGeminiBatteriesUsed()
           );
         }
         // Try getting variable directly
@@ -405,7 +411,9 @@ export async function rlmLoop(
             usage,
             iteration + 1,
             config,
-            budget.getState().budgetHit
+            budget.getState().budgetHit,
+            geminiCounts,
+            repl.getGeminiBatteriesUsed()
           );
         }
       }
@@ -414,7 +422,7 @@ export async function rlmLoop(
       if (finalSignal && finalSignal.type === "final") {
         clearTimeout(timeoutHandle);
         await repl.stop();
-        return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit);
+        return buildResult(finalSignal.value, usage, iteration + 1, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
       }
 
       // Format execution results and append to history
@@ -473,7 +481,9 @@ export async function rlmLoop(
       usage,
       opts.maxIterations,
       config,
-      budget.getState().budgetHit
+      budget.getState().budgetHit,
+      geminiCounts,
+      repl.getGeminiBatteriesUsed()
     );
   } catch (err: any) {
     clearTimeout(timeoutHandle);
@@ -485,7 +495,9 @@ export async function rlmLoop(
         usage,
         0,
         config,
-        budget.getState().budgetHit
+        budget.getState().budgetHit,
+        geminiCounts,
+        repl.getGeminiBatteriesUsed()
       );
     }
 

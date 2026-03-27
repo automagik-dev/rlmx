@@ -328,6 +328,11 @@ async function runQuery(opts: CliOptions): Promise<void> {
       run_id: logger.runId,
       cache_enabled: opts.cache,
       thinking_level: config.gemini.thinkingLevel ?? undefined,
+      gemini_batteries_used: result.geminiBatteriesUsed,
+      thought_signatures_circulated: result.geminiCounts?.thoughtSignatures,
+      web_search_calls: result.geminiCounts?.webSearch,
+      fetch_url_calls: result.geminiCounts?.fetchUrl,
+      code_executions_server_side: result.geminiCounts?.codeExecutionsServerSide,
     });
     // For JSON output, stats are included in the response
     if (opts.output === "json") {
