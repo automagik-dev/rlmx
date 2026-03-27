@@ -449,7 +449,18 @@ export async function handleLLMRequest(
     }
 
     case "generate_image": {
-      return [`Error: generate_image() is not yet fully implemented. Planned for v0.4 release.`];
+      if (!isGoogleProvider(config.model.provider)) {
+        return [
+          `Error: generate_image() requires provider: google. Current provider: ${config.model.provider}`,
+        ];
+      }
+      // IMAGE_GENERATION: Gemini 3 image generation is available but requires direct API calls
+      // that are not yet exposed through pi/ai completeSimple interface. This is a placeholder
+      // that returns an error for now. Full implementation would involve calling the Gemini API directly.
+      return [
+        `Error: generate_image() requires direct Gemini API integration (not yet available via pi/ai). ` +
+          `You can use Gemini's web interface or Google AI Studio directly for image generation.`,
+      ];
     }
 
     default:
