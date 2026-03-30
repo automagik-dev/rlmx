@@ -219,7 +219,7 @@ export async function rlmLoop(
     }
 
     await repl.start({
-      context: replContext as any,
+      context: replContext as string | string[] | Record<string, unknown>,
       tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
       loadGeminiBatteries: isGoogleProvider(config.model.provider) && (config.toolsLevel === "standard" || config.toolsLevel === "full"),
       toolsLevel: config.toolsLevel,
@@ -278,7 +278,7 @@ export async function rlmLoop(
       const response = await llmComplete(messages, config.model, {
         signal: abortController.signal,
         cacheConfig,
-        thinkingLevel: config.gemini.thinkingLevel as any,
+        thinkingLevel: config.gemini.thinkingLevel,
         outputSchema: config.output.schema,
         geminiConfig: config.gemini,
       });
@@ -480,11 +480,11 @@ export async function rlmLoop(
 
     const forcedResult = await forceFinalAnswer(messages, config, usage, abortController.signal, cacheConfig);
     return finalize(forcedResult, actualIterations);
-  } catch (err: any) {
+  } catch (err: unknown) {
     clearTimeout(timeoutHandle);
     await repl.stop().catch(() => {});
 
-    if (err.name === "AbortError" || abortController.signal.aborted) {
+    if ((err instanceof Error && err.name === "AbortError") || abortController.signal.aborted) {
       return buildResult(
         "Error: RLM query timed out",
         usage,
@@ -522,7 +522,7 @@ async function forceFinalAnswer(
   const response = await llmComplete(forceMessages, config.model, {
     signal,
     cacheConfig,
-    thinkingLevel: config.gemini.thinkingLevel as any,
+    thinkingLevel: config.gemini.thinkingLevel,
     outputSchema: config.output.schema,
     geminiConfig: config.gemini,
   });
