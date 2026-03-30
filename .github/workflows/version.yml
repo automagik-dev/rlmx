@@ -1,0 +1,111 @@
+name: Version
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-${{ github.event.workflow_run.head_branch || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  auto-version:
+    name: Auto Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       !contains(github.event.workflow_run.head_commit.message, '[skip ci]') &&
+       (
+         (github.event.workflow_run.head_branch == 'main' &&
+          startsWith(github.event.workflow_run.head_commit.message, 'Merge pull request') &&
+          contains(github.event.workflow_run.head_commit.message, '/dev'))
+         ||
+         (github.event.workflow_run.head_branch == 'dev')
+       ))
+
+    steps:
+      - name: Determine branch and version prefix
+        id: context
+        run: |
+          BRANCH="${{ github.event.workflow_run.head_branch || 'dev' }}"
+          echo "branch=dev" >> "$GITHUB_OUTPUT"
+          echo "prefix=0" >> "$GITHUB_OUTPUT"
+          if [ "$BRANCH" = "main" ]; then
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.context.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Derive version
+        id: version
+        run: |
+          PREFIX="${{ steps.context.outputs.prefix }}"
+          TODAY=$(date -u +%y%m%d)
+          EXISTING=$(git tag --list "v${PREFIX}.${TODAY}.*" | wc -l)
+          BUILD_NUMBER=$((EXISTING + 1))
+          VERSION="${PREFIX}.${TODAY}.${BUILD_NUMBER}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Derived version: ${VERSION}"
+
+      - name: Sync all version files
+        run: npm run bump-version
+        env:
+          RLMX_BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+
+      - name: Commit and tag
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="${{ steps.context.outputs.branch }}"
+
+          git add -A '*.json' 'src/version.ts'
+          if git diff --cached --quiet; then
+            echo "No version changes to commit"
+          else
+            git commit -m "chore(version): bump to ${VERSION} [skip ci]"
+          fi
+
+          git tag "v${VERSION}"
+          git push --atomic origin "HEAD:refs/heads/${BRANCH}" "refs/tags/v${VERSION}"
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN not set — skipping publish"
+            exit 0
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          npm publish --access public --tag ${{ steps.context.outputs.npm_tag }}
