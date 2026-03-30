@@ -193,6 +193,17 @@ async function readOptionalFile(path: string): Promise<string | null> {
 }
 
 /**
+ * Validate a budget value is a positive number or null.
+ */
+function validatePositiveBudget(value: unknown, field: string): void {
+  if (value !== null && (typeof value !== "number" || value <= 0)) {
+    throw new Error(
+      `Invalid ${field}: must be a positive number or null, got ${value}.`
+    );
+  }
+}
+
+/**
  * Parse and validate an rlmx.yaml file.
  */
 function parseYamlConfig(content: string, dir: string): RlmxConfig {
@@ -260,21 +271,9 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   };
 
   // Validate budget values
-  if (budget.maxCost !== null && (typeof budget.maxCost !== "number" || budget.maxCost <= 0)) {
-    throw new Error(
-      `Invalid budget.max-cost: must be a positive number or null, got ${budget.maxCost}.`
-    );
-  }
-  if (budget.maxTokens !== null && (typeof budget.maxTokens !== "number" || budget.maxTokens <= 0)) {
-    throw new Error(
-      `Invalid budget.max-tokens: must be a positive number or null, got ${budget.maxTokens}.`
-    );
-  }
-  if (budget.maxDepth !== null && (typeof budget.maxDepth !== "number" || budget.maxDepth <= 0)) {
-    throw new Error(
-      `Invalid budget.max-depth: must be a positive number or null, got ${budget.maxDepth}.`
-    );
-  }
+  validatePositiveBudget(budget.maxCost, "budget.max-cost");
+  validatePositiveBudget(budget.maxTokens, "budget.max-tokens");
+  validatePositiveBudget(budget.maxDepth, "budget.max-depth");
 
   // Parse tools-level
   const rawLevel = cfg["tools-level"] ?? "core";
