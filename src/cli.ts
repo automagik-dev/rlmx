@@ -42,6 +42,7 @@ Options:
   --ext <list>            File extensions for context dirs (comma-separated)
   --thinking <level>      Thinking level: minimal, low, medium, high (Gemini 3)
   --cache                 Enable cache mode (full context in system prompt for provider caching)
+  --no-session            Disable auto-save of session data
   --estimate              Show context size and cost estimate without caching (cache command)
   --parallel <n>          Concurrent questions for batch command (default: 1)
   --batch-api             Use Gemini Batch API for 50% cost reduction (batch command)
@@ -92,6 +93,7 @@ interface CliOptions {
   batchFile: string | null;
   parallel: number;
   batchApi: boolean;
+  noSession: boolean;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -118,6 +120,7 @@ function parseCliArgs(args: string[]): CliOptions {
       estimate: { type: "boolean", default: false },
       parallel: { type: "string", default: "1" },
       "batch-api": { type: "boolean", default: false },
+      "no-session": { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -129,7 +132,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1, batchApi: false,
+      batchFile: null, parallel: 1, batchApi: false, noSession: false,
     };
   }
 
@@ -139,7 +142,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1, batchApi: false,
+      batchFile: null, parallel: 1, batchApi: false, noSession: false,
     };
   }
 
@@ -200,6 +203,7 @@ function parseCliArgs(args: string[]): CliOptions {
     batchFile,
     parallel: parseInt(values.parallel as string, 10) || 1,
     batchApi: values["batch-api"] as boolean,
+    noSession: values["no-session"] as boolean,
   };
 }
 
@@ -357,6 +361,33 @@ async function runQuery(opts: CliOptions): Promise<void> {
     }
   } else {
     outputResult(result, opts.output);
+  }
+
+  // Save session (unless --no-session)
+  if (!opts.noSession) {
+    try {
+      const { saveSession } = await import("./session.js");
+      await saveSession({
+        runId: logger.runId,
+        query: opts.query ?? "(stdin)",
+        contextPath: opts.context,
+        model: `${config.model.provider}/${config.model.model}`,
+        answer: result.answer,
+        usage: {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          cachedTokens: result.usage.cacheReadTokens,
+          totalCost: result.usage.totalCost,
+          iterations: result.iterations,
+          timeMs: timeMs,
+          model: `${config.model.provider}/${config.model.model}`,
+        },
+        config: config as unknown as Record<string, unknown>,
+        logPath: opts.log,
+      });
+    } catch (err: unknown) {
+      console.error(`rlmx: session save failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Exit with non-zero code on empty response abort (issue #14)
