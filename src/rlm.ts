@@ -300,12 +300,12 @@ export async function rlmLoop(
       }
 
       // Check for empty LLM response (issue #14)
-      // Check for empty LLM response (issue #14)
       // Thinking-only responses (output tokens > 0 but no visible text) are normal
       // for reasoning models warming up — don't count as empty.
       if (responseText.length === 0) {
         if (response.usage.outputTokens > 0) {
           // Thinking-only iteration — model is reasoning, not stuck
+          consecutiveEmpty = 0;
           if (opts.verbose) {
             logVerbose(iteration, "thinking-only response (no visible text yet)");
           }
