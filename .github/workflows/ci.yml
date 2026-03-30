@@ -66,7 +66,7 @@ jobs:
           fi
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
           LOCAL=$(jq -r '.version' package.json)
-          PUBLISHED=$(npm view rlmx@next version 2>/dev/null || echo "none")
+          PUBLISHED=$(npm view @automagik/rlmx@next version 2>/dev/null || echo "none")
           if [ "$LOCAL" = "$PUBLISHED" ]; then
             echo "Version $LOCAL already published to @next — skipping"
             exit 0
