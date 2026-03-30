@@ -195,10 +195,10 @@ export class REPL {
     try {
       this._send({ type: "execute", code });
       return await this._waitForExecuteResult(timeoutMs);
-    } catch (err) {
+    } catch (err: unknown) {
       // Attempt crash recovery if process died (not during recovery itself)
       if (!this._recovering && !this.isRunning()) {
-        return this._recoverAndRetry(code, timeoutMs, err as Error);
+        return this._recoverAndRetry(code, timeoutMs, err instanceof Error ? err : new Error(String(err)));
       }
       throw err;
     }
@@ -420,9 +420,10 @@ export class REPL {
             if (this.llmHandler) {
               try {
                 results = await this.llmHandler(llmReq);
-              } catch (err) {
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
                 results = llmReq.prompts.map(
-                  () => `Error: LLM handler failed — ${err}`
+                  () => `Error: LLM handler failed — ${msg}`
                 );
               }
             } else {

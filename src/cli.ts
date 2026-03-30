@@ -218,8 +218,8 @@ async function runQuery(opts: CliOptions): Promise<void> {
       );
       process.exit(1);
     }
-  } catch (err: any) {
-    console.error(err.message);
+  } catch (err: unknown) {
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 

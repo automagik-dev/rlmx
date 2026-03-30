@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import yaml from "js-yaml";
+import type { ThinkingLevel } from "./gemini.js";
 
 // ─── Interfaces ──────────────────────────────────────────
 
@@ -49,7 +50,7 @@ export interface MediaResolutionConfig {
 
 /** Gemini-specific configuration */
 export interface GeminiConfig {
-  thinkingLevel: string | null;
+  thinkingLevel: ThinkingLevel | null;
   googleSearch: boolean;
   urlContext: boolean;
   codeExecution: boolean;
@@ -210,9 +211,10 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   let raw: unknown;
   try {
     raw = yaml.load(content);
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `Invalid YAML in rlmx.yaml: ${err.message ?? err}\n` +
+      `Invalid YAML in rlmx.yaml: ${msg}\n` +
         `Hint: check for indentation errors or unquoted special characters.`
     );
   }
@@ -318,7 +320,7 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
 
   // Parse gemini config
   const gemini: GeminiConfig = {
-    thinkingLevel: cfg.gemini?.["thinking-level"] ?? DEFAULT_GEMINI_CONFIG.thinkingLevel,
+    thinkingLevel: (cfg.gemini?.["thinking-level"] as ThinkingLevel | undefined) ?? DEFAULT_GEMINI_CONFIG.thinkingLevel,
     googleSearch: cfg.gemini?.["google-search"] ?? DEFAULT_GEMINI_CONFIG.googleSearch,
     urlContext: cfg.gemini?.["url-context"] ?? DEFAULT_GEMINI_CONFIG.urlContext,
     codeExecution: cfg.gemini?.["code-execution"] ?? DEFAULT_GEMINI_CONFIG.codeExecution,

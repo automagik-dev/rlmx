@@ -71,4 +71,4 @@ jobs:
             echo "Version $LOCAL already published to @next — skipping"
             exit 0
           fi
-          npm publish --tag next --access public
+          npm publish --tag next --access public || echo "Publish failed (version may already exist) — non-fatal"

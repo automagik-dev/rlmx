@@ -6,7 +6,7 @@
  */
 
 import { completeSimple, getModel } from "@mariozechner/pi-ai";
-import type { Message, UserMessage, AssistantMessage as PiAssistantMessage, SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { Message, UserMessage, AssistantMessage as PiAssistantMessage, SimpleStreamOptions, KnownProvider, TextContent } from "@mariozechner/pi-ai";
 import { spawn } from "node:child_process";
 import type { RlmxConfig, ModelConfig, GeminiConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
@@ -90,12 +90,12 @@ export interface LLMResponse {
  * Resolve a pi/ai model, trying the exact ID first, then stripping the date suffix.
  */
 function resolveModel(provider: string, modelId: string) {
-  let model = getModel(provider as any, modelId);
+  let model = getModel(provider as KnownProvider, modelId as never);
   if (!model) {
     // Try stripping date suffix (e.g., "claude-sonnet-4-5-20250514" -> "claude-sonnet-4-5")
     const stripped = modelId.replace(/-\d{8}$/, "");
     if (stripped !== modelId) {
-      model = getModel(provider as any, stripped);
+      model = getModel(provider as KnownProvider, stripped as never);
     }
   }
   if (!model) {
@@ -204,25 +204,28 @@ export async function llmComplete(
   const outputTokens = response.usage?.output ?? 0;
   const cacheReadTokens = response.usage?.cacheRead ?? 0;
   const cacheWriteTokens = response.usage?.cacheWrite ?? 0;
-  const cost = (response.usage as any)?.cost?.total ?? 0;
+  const usageRecord = response.usage as unknown as Record<string, unknown>;
+  const cost = usageRecord?.cost != null
+    ? (usageRecord.cost as Record<string, number>)?.total ?? 0
+    : 0;
 
   // Single pass: extract text, count thought signatures, collect code execution results
   const textParts: string[] = [];
   let thoughtSignatureCount = 0;
   const codeExecutionResults: CodeExecutionResult[] = [];
   for (const block of response.content ?? []) {
-    const b = block as any;
+    const b = block as unknown as Record<string, unknown>;
     if (b.type === "text") {
-      textParts.push(b.text);
+      textParts.push((block as TextContent).text);
     }
     if (b.thinkingSignature || b.textSignature) {
       thoughtSignatureCount++;
     }
     if (b.type === "executionResult") {
       codeExecutionResults.push({
-        code: b.code ?? "",
-        outcome: b.outcome ?? "OUTCOME_FAILED",
-        output: b.output ?? "",
+        code: (b.code as string) ?? "",
+        outcome: ((b.outcome as string) ?? "OUTCOME_FAILED") as CodeExecutionResult["outcome"],
+        output: (b.output as string) ?? "",
       });
     }
   }
