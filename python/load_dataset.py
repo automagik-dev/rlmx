@@ -18,13 +18,19 @@ def main():
 
     output = []
     for item in items:
+        # Oolong Synth uses "context_window_text" for the context field
+        context = item.get("context_window_text") or item.get("context", "")
+        answer = item.get("answer", "")
+        # answer can be a list — join if so
+        if isinstance(answer, list):
+            answer = ", ".join(str(a) for a in answer)
         output.append({
             "id": f"oolong-{item.get('id', 'unknown')}",
             "name": item.get("question", "")[:50],
             "question": item["question"],
-            "context": item["context"],
-            "expected": item.get("answer", ""),
-            "category": "oolong",
+            "context": context,
+            "expected": answer,
+            "category": item.get("task_group", "oolong"),
         })
 
     json.dump(output, sys.stdout)
