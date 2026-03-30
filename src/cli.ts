@@ -22,6 +22,7 @@ Usage:
   rlmx init [--dir <path>]       Scaffold rlmx.yaml config
   rlmx cache [options]           Pre-warm cache or estimate context size
   rlmx batch <file> [options]    Bulk interrogation from questions file
+  rlmx benchmark <mode> [options]  Run benchmarks (cost or oolong)
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -73,7 +74,7 @@ Examples:
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -150,6 +151,7 @@ function parseCliArgs(args: string[]): CliOptions {
     : positionals[0] === "cache" ? "cache"
     : positionals[0] === "batch" ? "batch"
     : positionals[0] === "config" ? "config"
+    : positionals[0] === "benchmark" ? "benchmark"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const batchFile = command === "batch" ? positionals[1] ?? null : null;
@@ -633,6 +635,41 @@ async function runConfig(args: string[]): Promise<void> {
   }
 }
 
+async function runBenchmarkCommand(opts: CliOptions, args: string[]): Promise<void> {
+  const mode = args[0];
+  const configDir = process.cwd();
+  const config = await loadConfig(configDir);
+
+  if (opts.tools) config.toolsLevel = opts.tools;
+
+  if (mode === "cost") {
+    const { runCostBenchmark, formatBenchmarkTable, saveBenchmarkResults } = await import("./benchmark.js");
+    const outputIdx = args.indexOf("--output");
+    const outputFormat = outputIdx >= 0 && args[outputIdx + 1] === "json" ? "json" as const : "table" as const;
+    const results = await runCostBenchmark(config, { outputFormat });
+    if (outputFormat === "json") {
+      console.log(JSON.stringify(results, null, 2));
+    } else {
+      console.error(formatBenchmarkTable(results));
+    }
+    const savedPath = await saveBenchmarkResults(results);
+    console.error(`Results saved to ${savedPath}`);
+  } else if (mode === "oolong") {
+    const samplesIdx = args.indexOf("--samples");
+    const samples = samplesIdx >= 0 ? parseInt(args[samplesIdx + 1], 10) : 5;
+    const idxArgIdx = args.indexOf("--idx");
+    const idx = idxArgIdx >= 0 ? parseInt(args[idxArgIdx + 1], 10) : undefined;
+
+    const { runOolongBenchmark, formatBenchmarkTable, saveBenchmarkResults } = await import("./benchmark.js");
+    const results = await runOolongBenchmark(config, { samples, idx });
+    console.error(formatBenchmarkTable(results));
+    const savedPath = await saveBenchmarkResults(results);
+    console.error(`Results saved to ${savedPath}`);
+  } else {
+    console.log(`rlmx benchmark — compare RLM vs direct LLM\n\nUsage:\n  rlmx benchmark cost                     Run cost benchmark with built-in dataset\n  rlmx benchmark cost --output json       Output results as JSON\n  rlmx benchmark oolong                   Run Oolong Synth (auto-installs HF datasets)\n  rlmx benchmark oolong --samples 5       Run N samples (default 5)\n  rlmx benchmark oolong --idx 42          Run specific sample by index`);
+  }
+}
+
 async function main(): Promise<void> {
   const opts = parseCliArgs(process.argv.slice(2));
 
@@ -668,6 +705,10 @@ async function main(): Promise<void> {
 
     case "config":
       await runConfig(process.argv.slice(3));
+      break;
+
+    case "benchmark":
+      await runBenchmarkCommand(opts, process.argv.slice(3));
       break;
 
     case "query":
