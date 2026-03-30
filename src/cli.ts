@@ -13,6 +13,7 @@ import { createLogger } from "./logger.js";
 import { checkPythonVersion } from "./detect.js";
 import { estimateTokens, validateContextSize } from "./cache.js";
 import { runBatch } from "./batch.js";
+import { loadSettings, saveSettings, injectApiKeysToEnv, formatValue, parseSettingValue, getSettingsPath } from "./settings.js";
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
@@ -60,11 +61,18 @@ Examples:
   rlmx cache --context ./docs/
   rlmx batch questions.txt --context ./docs/ --cache --max-cost 1.00
   rlmx batch questions.txt --context ./src/ --max-iterations 3
+
+  rlmx config set GEMINI_API_KEY <key>   Set API key
+  rlmx config set model.provider google  Set default provider
+  rlmx config get model.provider         Get a setting
+  rlmx config list                       Show all settings
+  rlmx config delete <key>               Remove a setting
+  rlmx config path                       Show settings file path
 `;
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache" | "batch";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -138,6 +146,7 @@ function parseCliArgs(args: string[]): CliOptions {
   const command = positionals[0] === "init" ? "init"
     : positionals[0] === "cache" ? "cache"
     : positionals[0] === "batch" ? "batch"
+    : positionals[0] === "config" ? "config"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const batchFile = command === "batch" ? positionals[1] ?? null : null;
@@ -503,8 +512,102 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
   });
 }
 
+const CONFIG_HELP = `rlmx config — manage global settings
+
+Usage:
+  rlmx config set <key> <value>   Set a setting
+  rlmx config get <key>           Get a setting value
+  rlmx config list                Show all settings (API keys masked)
+  rlmx config delete <key>        Remove a setting
+  rlmx config path                Show settings file path
+
+Keys:
+  API keys:    GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, ...
+  Model:       model.provider, model.model, model.sub_call_model
+  Budget:      budget.max_cost, budget.max_tokens, budget.max_depth
+  Gemini:      gemini.thinking_level, gemini.google_search, gemini.code_execution
+  General:     tools_level, cache.retention
+
+Settings file: ~/.rlmx/settings.json
+`;
+
+async function runConfig(args: string[]): Promise<void> {
+  const action = args[0];
+  const key = args[1];
+  const value = args.slice(2).join(" ");
+
+  switch (action) {
+    case "set": {
+      if (!key || !value) {
+        console.error("Usage: rlmx config set <key> <value>");
+        process.exit(1);
+      }
+      const settings = await loadSettings();
+      settings[key] = parseSettingValue(value);
+      await saveSettings(settings);
+      console.log(`Set ${key} = ${formatValue(key, settings[key])}`);
+      break;
+    }
+
+    case "get": {
+      if (!key) {
+        console.error("Usage: rlmx config get <key>");
+        process.exit(1);
+      }
+      const settings = await loadSettings();
+      if (!(key in settings)) {
+        console.error(`Key "${key}" not found in settings.`);
+        process.exit(1);
+      }
+      console.log(formatValue(key, settings[key]));
+      break;
+    }
+
+    case "list": {
+      const settings = await loadSettings();
+      const keys = Object.keys(settings);
+      if (keys.length === 0) {
+        console.log("No settings configured. Use: rlmx config set <key> <value>");
+        return;
+      }
+      for (const k of keys) {
+        console.log(`${k} = ${formatValue(k, settings[k])}`);
+      }
+      break;
+    }
+
+    case "delete": {
+      if (!key) {
+        console.error("Usage: rlmx config delete <key>");
+        process.exit(1);
+      }
+      const settings = await loadSettings();
+      if (!(key in settings)) {
+        console.error(`Key "${key}" not found in settings.`);
+        process.exit(1);
+      }
+      delete settings[key];
+      await saveSettings(settings);
+      console.log(`Deleted ${key}`);
+      break;
+    }
+
+    case "path":
+      console.log(getSettingsPath());
+      break;
+
+    default:
+      console.log(CONFIG_HELP);
+      break;
+  }
+}
+
 async function main(): Promise<void> {
   const opts = parseCliArgs(process.argv.slice(2));
+
+  // Load global settings and inject API keys before any command
+  const globalSettings = await loadSettings();
+  injectApiKeysToEnv(globalSettings);
 
   switch (opts.command) {
     case "help":
@@ -530,6 +633,10 @@ async function main(): Promise<void> {
 
     case "batch":
       await runBatchCommand(opts);
+      break;
+
+    case "config":
+      await runConfig(process.argv.slice(3));
       break;
 
     case "query":
