@@ -184,8 +184,14 @@ async function ensureBenchVenv(): Promise<string> {
     process.stderr.write("rlmx benchmark: setting up Python venv for HuggingFace datasets...\n");
     await mkdir(join(homedir(), ".rlmx"), { recursive: true });
 
-    await execFileAsync("python3", ["-m", "venv", venvDir]);
-    await execFileAsync(join(venvDir, "bin", "pip"), ["install", "datasets"]);
+    // Try uv first (preferred), fall back to python3 -m venv + pip
+    try {
+      await execFileAsync("uv", ["venv", venvDir]);
+      await execFileAsync("uv", ["pip", "install", "--python", pythonBin, "datasets"]);
+    } catch {
+      await execFileAsync("python3", ["-m", "venv", venvDir]);
+      await execFileAsync(join(venvDir, "bin", "pip"), ["install", "datasets"]);
+    }
 
     process.stderr.write("rlmx benchmark: Python venv ready.\n");
     return pythonBin;
