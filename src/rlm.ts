@@ -300,14 +300,25 @@ export async function rlmLoop(
       }
 
       // Check for empty LLM response (issue #14)
+      // Check for empty LLM response (issue #14)
+      // Thinking-only responses (output tokens > 0 but no visible text) are normal
+      // for reasoning models warming up — don't count as empty.
       if (responseText.length === 0) {
-        consecutiveEmpty++;
-        process.stderr.write(
-          `rlmx [iter ${iteration}]: WARNING — LLM returned empty response. Possible context size limit.\n`
-        );
-        if (consecutiveEmpty >= 3) {
-          emptyAbort = true;
-          break;
+        if (response.usage.outputTokens > 0) {
+          // Thinking-only iteration — model is reasoning, not stuck
+          if (opts.verbose) {
+            logVerbose(iteration, "thinking-only response (no visible text yet)");
+          }
+        } else {
+          // Truly empty — no thinking, no text
+          consecutiveEmpty++;
+          process.stderr.write(
+            `rlmx [iter ${iteration}]: WARNING — LLM returned empty response. Possible context size limit.\n`
+          );
+          if (consecutiveEmpty >= 3) {
+            emptyAbort = true;
+            break;
+          }
         }
       } else {
         consecutiveEmpty = 0;
