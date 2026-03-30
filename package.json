@@ -1,6 +1,6 @@
 {
   "name": "@namastex888/rlmx",
-  "version": "0.4.0",
+  "version": "0.260330.1",
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "publishConfig": {
