@@ -140,8 +140,13 @@ export async function loadContextFromDir(
   dirPath: string,
   options?: Partial<CollectOptions>
 ): Promise<LoadedContext> {
+  // Normalize extensions: ensure each has a leading dot ("mdx" → ".mdx")
+  const rawExtensions = options?.extensions ?? DEFAULT_COLLECT_OPTIONS.extensions;
+  const normalizedExtensions = rawExtensions.map((ext) =>
+    ext.startsWith(".") ? ext : `.${ext}`
+  );
   const merged: CollectOptions = {
-    extensions: options?.extensions ?? DEFAULT_COLLECT_OPTIONS.extensions,
+    extensions: normalizedExtensions,
     exclude: options?.exclude ?? DEFAULT_COLLECT_OPTIONS.exclude,
   };
   const items = await collectFiles(dirPath, dirPath, merged);
