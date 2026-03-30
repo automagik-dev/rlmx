@@ -70,9 +70,8 @@ export interface BenchmarkResults {
 // ─── Dataset Loading ─────────────────────────────────────
 
 async function loadBuiltinDataset(): Promise<BenchmarkQuestion[]> {
-  // Resolve from dist/src/benchmark.js -> ../../src/benchmark-data.json (source root)
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  const jsonPath = join(thisDir, "..", "..", "src", "benchmark-data.json");
+  const jsonPath = join(thisDir, "benchmark-data.json");
   const raw = await readFile(jsonPath, "utf-8");
   return JSON.parse(raw) as BenchmarkQuestion[];
 }
@@ -356,7 +355,6 @@ function formatPct(n: number): string {
 
 export function formatBenchmarkTable(results: BenchmarkResults): string {
   const colW = { name: 22, mode: 10, tokens: 12, cost: 10, latency: 10, iters: 8 };
-  const totalW = colW.name + colW.mode + colW.tokens + colW.cost + colW.latency + colW.iters + 7; // 7 for borders
 
   const lines: string[] = [];
 
