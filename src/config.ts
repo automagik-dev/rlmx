@@ -256,12 +256,17 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     exclude: cfg.context?.exclude ?? DEFAULT_CONTEXT_CONFIG.exclude,
   };
 
-  // Validate extensions format
-  for (const ext of contextConfig.extensions) {
+  // Validate and normalize extensions format
+  for (let i = 0; i < contextConfig.extensions.length; i++) {
+    const ext = contextConfig.extensions[i];
     if (typeof ext !== "string") {
       throw new Error(
         `Invalid extension in context.extensions: expected string, got ${typeof ext}.`
       );
+    }
+    // Ensure leading dot: "mdx" → ".mdx"
+    if (ext.length > 0 && !ext.startsWith(".")) {
+      contextConfig.extensions[i] = `.${ext}`;
     }
   }
 

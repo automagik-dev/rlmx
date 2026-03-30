@@ -22,6 +22,7 @@ Usage:
   rlmx init [--dir <path>]       Scaffold rlmx.yaml config
   rlmx cache [options]           Pre-warm cache or estimate context size
   rlmx batch <file> [options]    Bulk interrogation from questions file
+  rlmx benchmark <mode> [options]  Run benchmarks (cost or oolong)
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -42,6 +43,7 @@ Options:
   --ext <list>            File extensions for context dirs (comma-separated)
   --thinking <level>      Thinking level: minimal, low, medium, high (Gemini 3)
   --cache                 Enable cache mode (full context in system prompt for provider caching)
+  --no-session            Disable auto-save of session data
   --estimate              Show context size and cost estimate without caching (cache command)
   --parallel <n>          Concurrent questions for batch command (default: 1)
   --batch-api             Use Gemini Batch API for 50% cost reduction (batch command)
@@ -72,7 +74,7 @@ Examples:
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -92,6 +94,7 @@ interface CliOptions {
   batchFile: string | null;
   parallel: number;
   batchApi: boolean;
+  noSession: boolean;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -118,6 +121,7 @@ function parseCliArgs(args: string[]): CliOptions {
       estimate: { type: "boolean", default: false },
       parallel: { type: "string", default: "1" },
       "batch-api": { type: "boolean", default: false },
+      "no-session": { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -129,7 +133,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1, batchApi: false,
+      batchFile: null, parallel: 1, batchApi: false, noSession: false,
     };
   }
 
@@ -139,7 +143,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1, batchApi: false,
+      batchFile: null, parallel: 1, batchApi: false, noSession: false,
     };
   }
 
@@ -147,6 +151,7 @@ function parseCliArgs(args: string[]): CliOptions {
     : positionals[0] === "cache" ? "cache"
     : positionals[0] === "batch" ? "batch"
     : positionals[0] === "config" ? "config"
+    : positionals[0] === "benchmark" ? "benchmark"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const batchFile = command === "batch" ? positionals[1] ?? null : null;
@@ -200,6 +205,7 @@ function parseCliArgs(args: string[]): CliOptions {
     batchFile,
     parallel: parseInt(values.parallel as string, 10) || 1,
     batchApi: values["batch-api"] as boolean,
+    noSession: values["no-session"] as boolean,
   };
 }
 
@@ -357,6 +363,33 @@ async function runQuery(opts: CliOptions): Promise<void> {
     }
   } else {
     outputResult(result, opts.output);
+  }
+
+  // Save session (unless --no-session)
+  if (!opts.noSession) {
+    try {
+      const { saveSession } = await import("./session.js");
+      await saveSession({
+        runId: logger.runId,
+        query: opts.query ?? "(stdin)",
+        contextPath: opts.context,
+        model: `${config.model.provider}/${config.model.model}`,
+        answer: result.answer,
+        usage: {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          cachedTokens: result.usage.cacheReadTokens,
+          totalCost: result.usage.totalCost,
+          iterations: result.iterations,
+          timeMs: timeMs,
+          model: `${config.model.provider}/${config.model.model}`,
+        },
+        config: config as unknown as Record<string, unknown>,
+        logPath: opts.log,
+      });
+    } catch (err: unknown) {
+      console.error(`rlmx: session save failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Exit with non-zero code on empty response abort (issue #14)
@@ -602,6 +635,41 @@ async function runConfig(args: string[]): Promise<void> {
   }
 }
 
+async function runBenchmarkCommand(opts: CliOptions, args: string[]): Promise<void> {
+  const mode = args[0];
+  const configDir = process.cwd();
+  const config = await loadConfig(configDir);
+
+  if (opts.tools) config.toolsLevel = opts.tools;
+
+  if (mode === "cost") {
+    const { runCostBenchmark, formatBenchmarkTable, saveBenchmarkResults } = await import("./benchmark.js");
+    const outputIdx = args.indexOf("--output");
+    const outputFormat = outputIdx >= 0 && args[outputIdx + 1] === "json" ? "json" as const : "table" as const;
+    const results = await runCostBenchmark(config, { outputFormat });
+    if (outputFormat === "json") {
+      console.log(JSON.stringify(results, null, 2));
+    } else {
+      console.error(formatBenchmarkTable(results));
+    }
+    const savedPath = await saveBenchmarkResults(results);
+    console.error(`Results saved to ${savedPath}`);
+  } else if (mode === "oolong") {
+    const samplesIdx = args.indexOf("--samples");
+    const samples = samplesIdx >= 0 ? parseInt(args[samplesIdx + 1], 10) : 5;
+    const idxArgIdx = args.indexOf("--idx");
+    const idx = idxArgIdx >= 0 ? parseInt(args[idxArgIdx + 1], 10) : undefined;
+
+    const { runOolongBenchmark, formatBenchmarkTable, saveBenchmarkResults } = await import("./benchmark.js");
+    const results = await runOolongBenchmark(config, { samples, idx });
+    console.error(formatBenchmarkTable(results));
+    const savedPath = await saveBenchmarkResults(results);
+    console.error(`Results saved to ${savedPath}`);
+  } else {
+    console.log(`rlmx benchmark — compare RLM vs direct LLM\n\nUsage:\n  rlmx benchmark cost                     Run cost benchmark with built-in dataset\n  rlmx benchmark cost --output json       Output results as JSON\n  rlmx benchmark oolong                   Run Oolong Synth (auto-installs HF datasets)\n  rlmx benchmark oolong --samples 5       Run N samples (default 5)\n  rlmx benchmark oolong --idx 42          Run specific sample by index`);
+  }
+}
+
 async function main(): Promise<void> {
   const opts = parseCliArgs(process.argv.slice(2));
 
@@ -637,6 +705,10 @@ async function main(): Promise<void> {
 
     case "config":
       await runConfig(process.argv.slice(3));
+      break;
+
+    case "benchmark":
+      await runBenchmarkCommand(opts, process.argv.slice(3));
       break;
 
     case "query":

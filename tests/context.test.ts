@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadContext, loadContextFromDir, loadContextFromFile } from "../src/context.js";
 import type { ContextItem } from "../src/context.js";
+import { loadConfig } from "../src/config.js";
 
 describe("context loading", () => {
   let dir: string;
@@ -103,6 +104,68 @@ describe("context loading", () => {
     const ctx = await loadContextFromDir(dir);
     const items = ctx.content as ContextItem[];
     assert.equal(items.length, 0);
+    await rm(dir, { recursive: true });
+  });
+
+  it("extensions filter loads only matching types (regression #28)", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-ctx-"));
+    await writeFile(join(dir, "readme.md"), "markdown");
+    await writeFile(join(dir, "app.ts"), "typescript");
+    await writeFile(join(dir, "doc.mdx"), "mdx content");
+    await writeFile(join(dir, "data.json"), '{"key": "value"}');
+    await writeFile(join(dir, "style.css"), "body {}");
+
+    const ctx = await loadContextFromDir(dir, { extensions: [".mdx", ".json"] });
+    const items = ctx.content as ContextItem[];
+    const paths = items.map((i) => i.path).sort();
+
+    assert.equal(items.length, 2, `Expected 2 files but got ${items.length}: ${paths.join(", ")}`);
+    assert.deepEqual(paths, ["data.json", "doc.mdx"]);
+    await rm(dir, { recursive: true });
+  });
+
+  it("extensions without leading dots are normalized (regression #28)", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-ctx-"));
+    await writeFile(join(dir, "readme.md"), "markdown");
+    await writeFile(join(dir, "app.ts"), "typescript");
+    await writeFile(join(dir, "doc.mdx"), "mdx content");
+    await writeFile(join(dir, "data.json"), '{"key": "value"}');
+
+    // Pass extensions WITHOUT leading dots — should still work
+    const ctx = await loadContextFromDir(dir, { extensions: ["mdx", "json"] });
+    const items = ctx.content as ContextItem[];
+    const paths = items.map((i) => i.path).sort();
+
+    assert.equal(items.length, 2, `Expected 2 files but got ${items.length}: ${paths.join(", ")}`);
+    assert.deepEqual(paths, ["data.json", "doc.mdx"]);
+    await rm(dir, { recursive: true });
+  });
+
+  it("yaml context.extensions propagates to config correctly (regression #28)", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-ctx-"));
+    // Create an rlmx.yaml with custom extensions (without dots, as users often write)
+    await writeFile(
+      join(dir, "rlmx.yaml"),
+      "context:\n  extensions: [mdx, json]\n"
+    );
+
+    const config = await loadConfig(dir);
+    // Extensions should be normalized to have leading dots
+    assert.deepEqual(config.contextConfig.extensions, [".mdx", ".json"]);
+    // Exclude should fall back to defaults
+    assert.ok(config.contextConfig.exclude.includes("node_modules"));
+    await rm(dir, { recursive: true });
+  });
+
+  it("yaml context.extensions with dots propagates correctly (regression #28)", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-ctx-"));
+    await writeFile(
+      join(dir, "rlmx.yaml"),
+      "context:\n  extensions: [.mdx, .json]\n"
+    );
+
+    const config = await loadConfig(dir);
+    assert.deepEqual(config.contextConfig.extensions, [".mdx", ".json"]);
     await rm(dir, { recursive: true });
   });
 });
