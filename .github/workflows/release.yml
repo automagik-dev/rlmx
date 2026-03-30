@@ -115,5 +115,5 @@ jobs:
           VERSION="${{ steps.ver.outputs.version }}"
           if ! npm publish --access public 2>&1; then
             echo "Publish failed — retagging as latest..."
-            npm dist-tag add "@namastex888/rlmx@${VERSION}" latest
+            npm dist-tag add "rlmx@${VERSION}" latest
           fi
