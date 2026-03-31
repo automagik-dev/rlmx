@@ -27,7 +27,8 @@
   },
   "dependencies": {
     "@mariozechner/pi-ai": "0.64.0",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "pgserve": "^1.1.6"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.0.0",
