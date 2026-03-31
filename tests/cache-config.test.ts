@@ -1,16 +1,23 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config.js";
+
+/** Helper: create .rlmx/ dir with rlmx.yaml content */
+async function makeConfig(dir: string, yamlContent: string): Promise<void> {
+  const rlmxDir = join(dir, ".rlmx");
+  await mkdir(rlmxDir, { recursive: true });
+  await writeFile(join(rlmxDir, "rlmx.yaml"), yamlContent);
+}
 
 describe("YAML cache config parsing", () => {
   let dir: string;
 
   it("returns default cache config when no cache section exists", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(join(dir, "rlmx.yaml"), "model:\n  provider: google\n");
+    await makeConfig(dir, "model:\n  provider: google\n");
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.enabled, false);
     assert.equal(cfg.cache.strategy, "full");
@@ -23,9 +30,7 @@ describe("YAML cache config parsing", () => {
 
   it("parses full cache config with all fields", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `model:
+    await makeConfig(dir, `model:
   provider: anthropic
 cache:
   enabled: true
@@ -34,8 +39,7 @@ cache:
   retention: short
   ttl: 3600
   expire-time: "2026-12-31T23:59:59Z"
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.enabled, true);
     assert.equal(cfg.cache.strategy, "full");
@@ -48,14 +52,11 @@ cache:
 
   it("parses cache enabled: true", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `model:
+    await makeConfig(dir, `model:
   provider: google
 cache:
   enabled: true
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.enabled, true);
     await rm(dir, { recursive: true });
@@ -63,14 +64,11 @@ cache:
 
   it("parses cache enabled: false explicitly", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `model:
+    await makeConfig(dir, `model:
   provider: google
 cache:
   enabled: false
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.enabled, false);
     await rm(dir, { recursive: true });
@@ -78,12 +76,9 @@ cache:
 
   it("parses retention: short", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   retention: short
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.retention, "short");
     await rm(dir, { recursive: true });
@@ -91,12 +86,9 @@ cache:
 
   it("parses retention: long", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   retention: long
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.retention, "long");
     await rm(dir, { recursive: true });
@@ -104,36 +96,27 @@ cache:
 
   it("rejects invalid retention value", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   retention: medium
-`
-    );
+`);
     await assert.rejects(() => loadConfig(dir), /Invalid cache\.retention/);
     await rm(dir, { recursive: true });
   });
 
   it("rejects invalid strategy value", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   strategy: partial
-`
-    );
+`);
     await assert.rejects(() => loadConfig(dir), /Invalid cache\.strategy/);
     await rm(dir, { recursive: true });
   });
 
   it("parses TTL as a number", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   ttl: 7200
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.ttl, 7200);
     assert.equal(typeof cfg.cache.ttl, "number");
@@ -142,12 +125,9 @@ cache:
 
   it("parses expire-time as ISO 8601 string", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   expire-time: "2026-06-15T12:00:00Z"
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.expireTime, "2026-06-15T12:00:00Z");
     await rm(dir, { recursive: true });
@@ -155,28 +135,14 @@ cache:
 
   it("omits optional fields when not provided", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `cache:
+    await makeConfig(dir, `cache:
   enabled: true
-`
-    );
+`);
     const cfg = await loadConfig(dir);
     assert.equal(cfg.cache.enabled, true);
     assert.equal(cfg.cache.sessionPrefix, undefined);
     assert.equal(cfg.cache.ttl, undefined);
     assert.equal(cfg.cache.expireTime, undefined);
-    await rm(dir, { recursive: true });
-  });
-
-  it("defaults cache config in .md fallback", async () => {
-    dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(join(dir, "MODEL.md"), "provider: openai\nmodel: gpt-4\n");
-    const cfg = await loadConfig(dir);
-    assert.equal(cfg.cache.enabled, false);
-    assert.equal(cfg.cache.strategy, "full");
-    assert.equal(cfg.cache.retention, "long");
-    assert.equal(cfg.configSource, "md");
     await rm(dir, { recursive: true });
   });
 
@@ -192,12 +158,9 @@ cache:
 
   it("cache config coexists with other config sections", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-cache-cfg-"));
-    await writeFile(
-      join(dir, "rlmx.yaml"),
-      `model:
+    await makeConfig(dir, `model:
   provider: anthropic
   model: claude-sonnet-4-20250514
-system: "You are a code reviewer."
 budget:
   max-cost: 2.0
 cache:
@@ -205,17 +168,13 @@ cache:
   retention: short
   ttl: 1800
   session-prefix: review
-`
-    );
+`);
     const cfg = await loadConfig(dir);
-    // Verify cache
     assert.equal(cfg.cache.enabled, true);
     assert.equal(cfg.cache.retention, "short");
     assert.equal(cfg.cache.ttl, 1800);
     assert.equal(cfg.cache.sessionPrefix, "review");
-    // Verify other sections are unaffected
     assert.equal(cfg.model.provider, "anthropic");
-    assert.equal(cfg.system, "You are a code reviewer.");
     assert.equal(cfg.budget.maxCost, 2.0);
     await rm(dir, { recursive: true });
   });

@@ -19,7 +19,7 @@ const HELP = `rlmx — RLM algorithm CLI for coding agents
 
 Usage:
   rlmx "query" [options]          Run an RLM query
-  rlmx init [--dir <path>]       Scaffold rlmx.yaml config
+  rlmx init [--template default|code] [--dir <path>]  Scaffold .rlmx/ config
   rlmx cache [options]           Pre-warm cache or estimate context size
   rlmx batch <file> [options]    Bulk interrogation from questions file
   rlmx benchmark <mode> [options]  Run benchmarks (cost or oolong)
@@ -50,15 +50,18 @@ Options:
   --batch-api             Use Gemini Batch API for 50% cost reduction (batch command)
 
 Config:
-  rlmx.yaml               Single config file (run "rlmx init" to create)
-  Fallback: SYSTEM.md, TOOLS.md, CRITERIA.md, MODEL.md (v0.1 compat)
+  .rlmx/                   Config directory (run "rlmx init" to create)
+    rlmx.yaml              Config (model, budget, context, storage, etc.)
+    SYSTEM.md              System prompt
+    CRITERIA.md            Output criteria
+    TOOLS.md               Custom Python tools
 
 Examples:
   rlmx "How does IPC work?" --context ./docs/
   rlmx "Summarize this" --context paper.md --output json --stats
   rlmx "Analyze code" --context ./src/ --tools full --ext .ts,.js
   rlmx "Quick question" --max-cost 0.10 --max-tokens 5000
-  rlmx init --dir ./my-project
+  rlmx init --template code --dir ./my-project
   echo "data" | rlmx "Analyze this" --log run.jsonl
   rlmx cache --context ./docs/ --estimate
   rlmx cache --context ./docs/
@@ -96,6 +99,7 @@ interface CliOptions {
   parallel: number;
   batchApi: boolean;
   noSession: boolean;
+  template: string;
 }
 
 function parseCliArgs(args: string[]): CliOptions {
@@ -123,6 +127,7 @@ function parseCliArgs(args: string[]): CliOptions {
       parallel: { type: "string", default: "1" },
       "batch-api": { type: "boolean", default: false },
       "no-session": { type: "boolean", default: false },
+      template: { type: "string", default: "default" },
     },
     allowPositionals: true,
     strict: false,
@@ -134,7 +139,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1, batchApi: false, noSession: false,
+      batchFile: null, parallel: 1, batchApi: false, noSession: false, template: "default",
     };
   }
 
@@ -144,7 +149,7 @@ function parseCliArgs(args: string[]): CliOptions {
       verbose: false, maxIterations: 30, timeout: 300000, dir: process.cwd(),
       stats: false, log: null, tools: null, maxCost: null, maxTokens: null,
       maxDepth: null, ext: null, thinking: null, cache: false, estimate: false,
-      batchFile: null, parallel: 1, batchApi: false, noSession: false,
+      batchFile: null, parallel: 1, batchApi: false, noSession: false, template: "default",
     };
   }
 
@@ -208,16 +213,22 @@ function parseCliArgs(args: string[]): CliOptions {
     parallel: parseInt(values.parallel as string, 10) || 1,
     batchApi: values["batch-api"] as boolean,
     noSession: values["no-session"] as boolean,
+    template: (values.template as string) || "default",
   };
 }
 
-async function runInit(dir: string): Promise<void> {
+async function runInit(dir: string, template: string): Promise<void> {
   await mkdir(dir, { recursive: true });
-  const created = await scaffold(dir);
-  if (created.length === 0) {
-    console.log("Config already exists in", dir);
-  } else {
-    console.log(`Created ${created.join(", ")} in ${dir}`);
+  try {
+    const created = await scaffold(dir, template);
+    if (created.length === 0) {
+      console.log("Config already exists in", dir);
+    } else {
+      console.log(`Created ${created.join(", ")} in .rlmx/ (${dir})`);
+    }
+  } catch (err: unknown) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
   }
 }
 
@@ -245,7 +256,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
     if (opts.verbose) {
       console.error("rlmx: auto-scaffolding config files...");
     }
-    const created = await scaffold(configDir);
+    const created = await scaffold(configDir, "default");
     if (opts.verbose && created.length > 0) {
       console.error(`  Created: ${created.join(", ")}`);
     }
@@ -750,7 +761,7 @@ async function main(): Promise<void> {
     }
 
     case "init":
-      await runInit(opts.dir);
+      await runInit(opts.dir, opts.template);
       break;
 
     case "cache":
