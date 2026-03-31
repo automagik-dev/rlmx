@@ -11,7 +11,7 @@ export {
 } from "./gemini.js";
 export type { ThinkingLevel, GeminiStats } from "./gemini.js";
 
-export { scaffold, needsScaffold, SCAFFOLD_FILE_NAMES } from "./scaffold.js";
+export { scaffold, needsScaffold } from "./scaffold.js";
 
 export { loadContext, loadContextFromDir, loadContextFromFile, loadContextFromStdin } from "./context.js";
 export type { LoadedContext, ContextItem, CollectOptions } from "./context.js";
