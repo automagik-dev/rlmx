@@ -23,6 +23,7 @@ Usage:
   rlmx cache [options]           Pre-warm cache or estimate context size
   rlmx batch <file> [options]    Bulk interrogation from questions file
   rlmx benchmark <mode> [options]  Run benchmarks (cost or oolong)
+  rlmx stats [options]           Query run history and cost breakdowns
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -74,7 +75,7 @@ Examples:
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark" | "stats";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -152,6 +153,7 @@ function parseCliArgs(args: string[]): CliOptions {
     : positionals[0] === "batch" ? "batch"
     : positionals[0] === "config" ? "config"
     : positionals[0] === "benchmark" ? "benchmark"
+    : positionals[0] === "stats" ? "stats"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const batchFile = command === "batch" ? positionals[1] ?? null : null;
@@ -303,6 +305,36 @@ async function runQuery(opts: CliOptions): Promise<void> {
     }
   }
 
+  // Validate context size and auto-adjust cache/storage modes
+  let storageMode = false;
+  if (context) {
+    const validation = validateContextSize(context, config.model.provider);
+    if (!validation.valid) {
+      // Context exceeds model limit — disable cache mode if it was enabled
+      if (opts.cache || config.cache.enabled) {
+        console.error(
+          `rlmx: context exceeds model limit (~${validation.estimatedTokens.toLocaleString()} tokens > ${validation.limit.toLocaleString()}), disabling cache mode`
+        );
+        opts.cache = false;
+        config.cache.enabled = false;
+      }
+      // Signal storage mode when enabled is 'auto' or 'always'
+      if (config.storage.enabled === "auto" || config.storage.enabled === "always") {
+        storageMode = true;
+        console.error(
+          `rlmx: storage mode activated for large context (~${validation.estimatedTokens.toLocaleString()} tokens)`
+        );
+      }
+    }
+  }
+  // Force storage mode when explicitly set to 'always'
+  if (config.storage.enabled === "always" && !storageMode) {
+    storageMode = true;
+    if (opts.verbose) {
+      console.error("rlmx: storage mode forced (storage.enabled: always)");
+    }
+  }
+
   // Read query from stdin if not provided as argument
   let query = opts.query;
   if (!query && !process.stdin.isTTY) {
@@ -322,6 +354,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
     verbose: opts.verbose,
     output: opts.output,
     cache: opts.cache,
+    storageMode,
     logger,
   });
 
@@ -531,6 +564,30 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
     }
   }
 
+  // Validate context size and auto-adjust cache/storage mode for batch
+  let batchCache = true;
+  let batchStorageMode = false;
+  if (context) {
+    const validation = validateContextSize(context, config.model.provider);
+    if (!validation.valid) {
+      console.error(
+        `rlmx: context exceeds model limit (~${validation.estimatedTokens.toLocaleString()} tokens > ${validation.limit.toLocaleString()}), disabling cache mode`
+      );
+      batchCache = false;
+      config.cache.enabled = false;
+      if (config.storage.enabled === "auto" || config.storage.enabled === "always") {
+        batchStorageMode = true;
+        console.error(
+          `rlmx: storage mode activated for batch (~${validation.estimatedTokens.toLocaleString()} tokens)`
+        );
+      }
+    }
+  }
+  // Force storage mode when explicitly set to 'always'
+  if (config.storage.enabled === "always" && !batchStorageMode) {
+    batchStorageMode = true;
+  }
+
   if (opts.verbose) {
     console.error(`rlmx batch: processing ${opts.batchFile}`);
   }
@@ -539,7 +596,8 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
     maxIterations: opts.maxIterations,
     timeout: opts.timeout,
     verbose: opts.verbose,
-    cache: true,
+    cache: batchCache,
+    storageMode: batchStorageMode,
     maxCost: opts.maxCost ?? undefined,
     parallel: opts.parallel,
   });
@@ -710,6 +768,12 @@ async function main(): Promise<void> {
     case "benchmark":
       await runBenchmarkCommand(opts, process.argv.slice(3));
       break;
+
+    case "stats": {
+      const { runStatsCommand } = await import("./stats.js");
+      await runStatsCommand(process.argv.slice(3));
+      break;
+    }
 
     case "query":
       if (!opts.query && process.stdin.isTTY) {

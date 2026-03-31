@@ -11,6 +11,7 @@ import { rlmLoop, type RLMOptions } from "./rlm.js";
 import type { RlmxConfig } from "./config.js";
 import type { LoadedContext } from "./context.js";
 import { isGoogleProvider } from "./gemini.js";
+import { validateContextSize } from "./cache.js";
 
 interface BatchResult {
   question: string;
@@ -36,6 +37,8 @@ export interface BatchOptions extends Partial<RLMOptions> {
   parallel?: number;
   /** Use Gemini Batch API for 50% cost reduction. Requires provider: google. */
   batchApi?: boolean;
+  /** When true, use pgserve storage for large context handling. */
+  storageMode?: boolean;
 }
 
 /**
@@ -96,13 +99,18 @@ export async function runBatch(
       break;
     }
 
-    // Run each question through rlmLoop with cache enabled
+    // Determine cache/storage mode for this batch
+    const useCache = options.cache ?? true;
+    const useStorage = options.storageMode ?? false;
+
+    // Run each question through rlmLoop
     const result = await rlmLoop(question, context, config, {
       maxIterations: options.maxIterations,
       timeout: options.timeout,
       verbose: options.verbose,
       output: "text", // batch always captures text internally
-      cache: true, // batch always uses cache
+      cache: useCache,
+      storageMode: useStorage,
     });
 
     totalCost += result.usage.totalCost;

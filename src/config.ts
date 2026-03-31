@@ -65,6 +65,17 @@ export interface OutputConfig {
   schema: Record<string, unknown> | null;
 }
 
+/** Storage configuration for pgserve-backed large context handling */
+export interface StorageConfig {
+  enabled: "auto" | "always" | "never";
+  mode: "persistent" | "memory";
+  dataDir: string;
+  port: number;
+  chunkSize: number | null;
+  chunkUtilization: number;
+  charsPerToken: number;
+}
+
 /** Tool level — controls which functions are available in the REPL */
 export type ToolsLevel = "core" | "standard" | "full";
 
@@ -88,6 +99,8 @@ export interface RlmxConfig {
   gemini: GeminiConfig;
   /** Structured output configuration */
   output: OutputConfig;
+  /** Storage configuration for pgserve */
+  storage: StorageConfig;
   /** Config source: "yaml" | "md" | "defaults" */
   configSource: "yaml" | "md" | "defaults";
 }
@@ -129,6 +142,16 @@ const DEFAULT_GEMINI_CONFIG: GeminiConfig = {
 
 const DEFAULT_OUTPUT_CONFIG: OutputConfig = {
   schema: null,
+};
+
+export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
+  enabled: "auto",
+  mode: "persistent",
+  dataDir: "~/.rlmx/data",
+  port: 0,
+  chunkSize: null,
+  chunkUtilization: 0.6,
+  charsPerToken: 4,
 };
 
 // ─── YAML Schema ─────────────────────────────────────────
@@ -177,6 +200,15 @@ interface RawYamlConfig {
     retention?: string;
     ttl?: number;
     "expire-time"?: string;
+  };
+  storage?: {
+    enabled?: string;
+    mode?: string;
+    "data-dir"?: string;
+    port?: number;
+    "chunk-size"?: number | null;
+    "chunk-utilization"?: number;
+    "chars-per-token"?: number;
   };
 }
 
@@ -371,6 +403,53 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     );
   }
 
+  // Parse storage config
+  const rawEnabled = cfg.storage?.enabled ?? DEFAULT_STORAGE_CONFIG.enabled;
+  if (!["auto", "always", "never"].includes(rawEnabled)) {
+    throw new Error(
+      `Invalid storage.enabled "${rawEnabled}" in rlmx.yaml. Must be one of: auto, always, never.`
+    );
+  }
+  const rawMode = cfg.storage?.mode ?? DEFAULT_STORAGE_CONFIG.mode;
+  if (!["persistent", "memory"].includes(rawMode)) {
+    throw new Error(
+      `Invalid storage.mode "${rawMode}" in rlmx.yaml. Must be one of: persistent, memory.`
+    );
+  }
+  const storagePort = cfg.storage?.port ?? DEFAULT_STORAGE_CONFIG.port;
+  if (typeof storagePort !== "number" || storagePort < 0 || !Number.isInteger(storagePort)) {
+    throw new Error(
+      `Invalid storage.port in rlmx.yaml: must be a non-negative integer, got ${storagePort}.`
+    );
+  }
+  const chunkSize = cfg.storage?.["chunk-size"] ?? DEFAULT_STORAGE_CONFIG.chunkSize;
+  if (chunkSize !== null && (typeof chunkSize !== "number" || chunkSize <= 0)) {
+    throw new Error(
+      `Invalid storage.chunk-size in rlmx.yaml: must be a positive number or null, got ${chunkSize}.`
+    );
+  }
+  const chunkUtilization = cfg.storage?.["chunk-utilization"] ?? DEFAULT_STORAGE_CONFIG.chunkUtilization;
+  if (typeof chunkUtilization !== "number" || chunkUtilization <= 0 || chunkUtilization > 1) {
+    throw new Error(
+      `Invalid storage.chunk-utilization in rlmx.yaml: must be a number between 0 (exclusive) and 1 (inclusive), got ${chunkUtilization}.`
+    );
+  }
+  const charsPerToken = cfg.storage?.["chars-per-token"] ?? DEFAULT_STORAGE_CONFIG.charsPerToken;
+  if (typeof charsPerToken !== "number" || charsPerToken <= 0) {
+    throw new Error(
+      `Invalid storage.chars-per-token in rlmx.yaml: must be a positive number, got ${charsPerToken}.`
+    );
+  }
+  const storage: StorageConfig = {
+    enabled: rawEnabled as StorageConfig["enabled"],
+    mode: rawMode as StorageConfig["mode"],
+    dataDir: cfg.storage?.["data-dir"] ?? DEFAULT_STORAGE_CONFIG.dataDir,
+    port: storagePort,
+    chunkSize,
+    chunkUtilization,
+    charsPerToken,
+  };
+
   return {
     system,
     tools,
@@ -383,6 +462,7 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     cache,
     gemini,
     output,
+    storage,
     configSource: "yaml",
   };
 }
@@ -499,6 +579,7 @@ async function loadConfigFromMd(dir: string): Promise<RlmxConfig> {
     cache: { ...DEFAULT_CACHE_CONFIG },
     gemini: { ...DEFAULT_GEMINI_CONFIG },
     output: { ...DEFAULT_OUTPUT_CONFIG },
+    storage: { ...DEFAULT_STORAGE_CONFIG },
     configSource: "md",
   };
 }
@@ -519,6 +600,7 @@ function defaultConfig(dir: string): RlmxConfig {
     cache: { ...DEFAULT_CACHE_CONFIG },
     gemini: { ...DEFAULT_GEMINI_CONFIG },
     output: { ...DEFAULT_OUTPUT_CONFIG },
+    storage: { ...DEFAULT_STORAGE_CONFIG },
     configSource: "defaults",
   };
 }
