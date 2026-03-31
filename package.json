@@ -28,6 +28,7 @@
   "dependencies": {
     "@mariozechner/pi-ai": "0.64.0",
     "js-yaml": "^4.1.1",
+    "pg": "^8.20.0",
     "pgserve": "^1.1.6"
   },
   "devDependencies": {
@@ -35,6 +36,7 @@
     "@commitlint/config-conventional": "^19.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
     "husky": "^9.0.0",
     "typescript": "^5.7.0"
   },

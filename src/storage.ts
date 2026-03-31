@@ -1,0 +1,465 @@
+/**
+ * PgStorage — embedded pgserve lifecycle, context ingestion, and query interface.
+ *
+ * Spawns pgserve as a child process (Bun-based TCP proxy over embedded PostgreSQL),
+ * connects via node-postgres, and provides methods for context storage and retrieval.
+ */
+
+import { spawn, type ChildProcess } from "node:child_process";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+import { mkdirSync } from "node:fs";
+import pg from "pg";
+import type { StorageConfig } from "./config.js";
+import type { LoadedContext, ContextItem } from "./context.js";
+import { PROVIDER_LIMITS } from "./cache.js";
+
+const { Client } = pg;
+
+/** Database name used for rlmx context storage */
+const RLMX_DB = "rlmx";
+
+/** Schema DDL for the records table */
+const SCHEMA_DDL = `
+CREATE TABLE IF NOT EXISTS records (
+  line_num       INT PRIMARY KEY,
+  timestamp      TIMESTAMPTZ,
+  type           TEXT,
+  content        TEXT NOT NULL,
+  content_tsvector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
+);
+
+CREATE INDEX IF NOT EXISTS idx_records_tsvector ON records USING GIN (content_tsvector);
+CREATE INDEX IF NOT EXISTS idx_records_timestamp ON records (timestamp) WHERE timestamp IS NOT NULL;
+`;
+
+/** Resolve ~ in paths to the user's home directory */
+function expandHome(p: string): string {
+  if (p.startsWith("~/") || p === "~") {
+    return join(homedir(), p.slice(1));
+  }
+  return p;
+}
+
+/**
+ * Compute adaptive chunk size based on provider limits and storage config.
+ */
+export function getChunkSize(provider: string, config: StorageConfig): number {
+  if (config.chunkSize) return config.chunkSize;
+  const limit = PROVIDER_LIMITS[provider] ?? 128000;
+  return Math.floor(limit * config.chunkUtilization * config.charsPerToken);
+}
+
+/**
+ * PgStorage manages an embedded pgserve instance for large context handling.
+ */
+export class PgStorage {
+  private process: ChildProcess | null = null;
+  private client: InstanceType<typeof Client> | null = null;
+  private port = 0;
+  private stopping = false;
+  private cleanupRegistered = false;
+
+  /** Connection string for the running pgserve instance */
+  get connectionString(): string {
+    return `postgresql://localhost:${this.port}/${RLMX_DB}`;
+  }
+
+  /**
+   * Start pgserve and connect to it.
+   * Returns the connection string once ready.
+   */
+  async start(config: StorageConfig): Promise<string> {
+    // Resolve pgserve binary path
+    const pgserveBin = this.findPgserveBin();
+
+    // Build CLI args
+    const args: string[] = [];
+
+    // Port: 0 means let pgserve pick; otherwise use the specified port
+    const requestedPort = config.port || 8432;
+    args.push("--port", String(requestedPort));
+
+    // Mode: persistent uses dataDir, memory uses temp
+    if (config.mode === "persistent") {
+      const dataDir = expandHome(config.dataDir);
+      mkdirSync(dataDir, { recursive: true });
+      args.push("--data", dataDir);
+    }
+    // memory mode: no --data flag = in-memory (pgserve default)
+
+    // Quiet output for embedded use
+    args.push("--log", "error");
+    args.push("--no-cluster");
+    args.push("--no-stats");
+
+    // Spawn pgserve
+    this.process = spawn(pgserveBin, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: false,
+    });
+
+    // Register cleanup handlers (only once per process)
+    if (!this.cleanupRegistered) {
+      this.registerCleanup();
+      this.cleanupRegistered = true;
+    }
+
+    // Wait for pgserve to be ready by polling for connection
+    this.port = requestedPort;
+    await this.waitForReady();
+
+    // Connect pg client and create schema
+    this.client = new Client({ connectionString: this.connectionString });
+    await this.client.connect();
+    await this.client.query(SCHEMA_DDL);
+
+    return this.connectionString;
+  }
+
+  /**
+   * Ingest a loaded context into the records table.
+   * For JSONL: parses each line as JSON, extracts timestamp/type fields.
+   * For other text: one record per line.
+   */
+  async ingest(context: LoadedContext): Promise<number> {
+    if (!this.client) throw new Error("PgStorage not started");
+
+    // Collect all lines from context
+    let lines: string[];
+    if (context.type === "list") {
+      const items = context.content as ContextItem[];
+      lines = items.flatMap((item) => item.content.split("\n"));
+    } else {
+      lines = (context.content as string).split("\n");
+    }
+
+    // Batch insert using multi-row VALUES
+    const BATCH_SIZE = 500;
+    let ingested = 0;
+
+    for (let i = 0; i < lines.length; i += BATCH_SIZE) {
+      const batch = lines.slice(i, i + BATCH_SIZE);
+      const values: unknown[] = [];
+      const placeholders: string[] = [];
+
+      for (let j = 0; j < batch.length; j++) {
+        const lineNum = i + j;
+        const line = batch[j];
+        if (line.trim() === "") continue;
+
+        const { timestamp, type, content } = parseLine(line);
+        const idx = values.length;
+        placeholders.push(
+          `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4})`
+        );
+        values.push(lineNum, timestamp, type, content);
+      }
+
+      if (placeholders.length > 0) {
+        await this.client.query(
+          `INSERT INTO records (line_num, timestamp, type, content)
+           VALUES ${placeholders.join(", ")}
+           ON CONFLICT (line_num) DO NOTHING`,
+          values
+        );
+        ingested += placeholders.length;
+      }
+    }
+
+    return ingested;
+  }
+
+  /**
+   * Full-text search via tsvector.
+   */
+  async search(
+    pattern: string,
+    limit = 20
+  ): Promise<Array<{ line_num: number; content: string; rank: number }>> {
+    if (!this.client) throw new Error("PgStorage not started");
+
+    // Convert pattern to tsquery: split words and join with &
+    const tsquery = pattern
+      .trim()
+      .split(/\s+/)
+      .map((w) => w.replace(/[^a-zA-Z0-9]/g, ""))
+      .filter(Boolean)
+      .join(" & ");
+
+    if (!tsquery) return [];
+
+    const result = await this.client.query(
+      `SELECT line_num, content, ts_rank(content_tsvector, to_tsquery('english', $1)) AS rank
+       FROM records
+       WHERE content_tsvector @@ to_tsquery('english', $1)
+       ORDER BY rank DESC
+       LIMIT $2`,
+      [tsquery, limit]
+    );
+
+    return result.rows.map((r) => ({
+      line_num: r.line_num,
+      content: r.content,
+      rank: parseFloat(r.rank),
+    }));
+  }
+
+  /**
+   * Get records by line number range (inclusive).
+   */
+  async slice(
+    start: number,
+    end: number
+  ): Promise<Array<{ line_num: number; content: string }>> {
+    if (!this.client) throw new Error("PgStorage not started");
+
+    const result = await this.client.query(
+      `SELECT line_num, content FROM records
+       WHERE line_num >= $1 AND line_num < $2
+       ORDER BY line_num`,
+      [start, end]
+    );
+
+    return result.rows;
+  }
+
+  /**
+   * Filter records by timestamp range.
+   */
+  async timeRange(
+    from: string,
+    to: string
+  ): Promise<
+    Array<{ line_num: number; timestamp: string; content: string }>
+  > {
+    if (!this.client) throw new Error("PgStorage not started");
+
+    const result = await this.client.query(
+      `SELECT line_num, timestamp, content FROM records
+       WHERE timestamp >= $1::timestamptz AND timestamp <= $2::timestamptz
+       ORDER BY timestamp`,
+      [from, to]
+    );
+
+    return result.rows;
+  }
+
+  /**
+   * Count total records.
+   */
+  async count(): Promise<number> {
+    if (!this.client) throw new Error("PgStorage not started");
+    const result = await this.client.query("SELECT COUNT(*)::int AS cnt FROM records");
+    return result.rows[0].cnt;
+  }
+
+  /**
+   * Execute raw SQL (read-only).
+   */
+  async query(sql: string): Promise<unknown[]> {
+    if (!this.client) throw new Error("PgStorage not started");
+
+    // Wrap in read-only transaction for safety
+    await this.client.query("BEGIN TRANSACTION READ ONLY");
+    try {
+      const result = await this.client.query(sql);
+      await this.client.query("COMMIT");
+      return result.rows;
+    } catch (err) {
+      await this.client.query("ROLLBACK").catch(() => {});
+      throw err;
+    }
+  }
+
+  /**
+   * Stop pgserve: graceful 3s timeout, then SIGKILL.
+   */
+  async stop(): Promise<void> {
+    if (this.stopping) return;
+    this.stopping = true;
+
+    // Close pg client
+    if (this.client) {
+      try {
+        await this.client.end();
+      } catch {
+        // Ignore client close errors
+      }
+      this.client = null;
+    }
+
+    // Kill pgserve process
+    const proc = this.process;
+    if (proc && proc.pid && !proc.killed) {
+      await new Promise<void>((resolve) => {
+        const forceKillTimer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // Already dead
+          }
+          resolve();
+        }, 3000);
+
+        proc.once("exit", () => {
+          clearTimeout(forceKillTimer);
+          resolve();
+        });
+
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          clearTimeout(forceKillTimer);
+          resolve();
+        }
+      });
+    }
+
+    this.process = null;
+    this.stopping = false;
+  }
+
+  // ─── Private helpers ──────────────────────────────────────
+
+  /** Find the pgserve CLI binary in node_modules */
+  private findPgserveBin(): string {
+    // Look for the wrapper script in node_modules/.bin
+    const binPath = resolve("node_modules", ".bin", "pgserve");
+    return binPath;
+  }
+
+  /**
+   * Wait for pgserve to accept connections (poll with backoff).
+   * Throws if not ready within 10 seconds.
+   */
+  private async waitForReady(): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    let lastError: Error | null = null;
+
+    // Also capture process errors
+    const procError = new Promise<never>((_, reject) => {
+      if (!this.process) return;
+      this.process.once("exit", (code) => {
+        if (code !== null && code !== 0) {
+          reject(new Error(`pgserve exited with code ${code}`));
+        }
+      });
+      this.process.once("error", (err) => {
+        reject(new Error(`pgserve spawn error: ${err.message}`));
+      });
+    });
+
+    while (Date.now() < deadline) {
+      try {
+        const testClient = new Client({
+          connectionString: this.connectionString,
+          connectionTimeoutMillis: 1000,
+        });
+        await Promise.race([testClient.connect(), procError]);
+        await testClient.end();
+        return;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+
+    throw new Error(
+      `pgserve did not become ready within 10s: ${lastError?.message ?? "unknown error"}`
+    );
+  }
+
+  /** Register process exit handlers for cleanup */
+  private registerCleanup(): void {
+    const cleanup = () => {
+      if (this.process && this.process.pid && !this.process.killed) {
+        try {
+          this.process.kill("SIGKILL");
+        } catch {
+          // Best effort
+        }
+      }
+    };
+
+    process.once("exit", cleanup);
+    process.once("SIGTERM", () => {
+      cleanup();
+      process.exit(128 + 15);
+    });
+    process.once("SIGINT", () => {
+      cleanup();
+      process.exit(128 + 2);
+    });
+    process.once("uncaughtException", (err) => {
+      console.error("rlmx: uncaught exception, cleaning up pgserve:", err.message);
+      cleanup();
+      process.exit(1);
+    });
+  }
+}
+
+// ─── Line parsing ───────────────────────────────────────
+
+/** Common timestamp field names in JSONL data */
+const TIMESTAMP_FIELDS = [
+  "timestamp",
+  "ts",
+  "time",
+  "datetime",
+  "date",
+  "created_at",
+  "createdAt",
+  "@timestamp",
+];
+
+/** Common type/category field names in JSONL data */
+const TYPE_FIELDS = ["type", "kind", "level", "severity", "category", "event"];
+
+/**
+ * Parse a single line of context data.
+ * Tries JSON first (JSONL), falls back to plain text.
+ */
+function parseLine(line: string): {
+  timestamp: string | null;
+  type: string | null;
+  content: string;
+} {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) {
+    return { timestamp: null, type: null, content: trimmed };
+  }
+
+  try {
+    const obj = JSON.parse(trimmed);
+    if (typeof obj !== "object" || obj === null) {
+      return { timestamp: null, type: null, content: trimmed };
+    }
+
+    // Extract timestamp
+    let timestamp: string | null = null;
+    for (const field of TIMESTAMP_FIELDS) {
+      if (obj[field] !== undefined && obj[field] !== null) {
+        timestamp = String(obj[field]);
+        break;
+      }
+    }
+
+    // Extract type
+    let type: string | null = null;
+    for (const field of TYPE_FIELDS) {
+      if (obj[field] !== undefined && obj[field] !== null) {
+        type = String(obj[field]);
+        break;
+      }
+    }
+
+    return { timestamp, type, content: trimmed };
+  } catch {
+    // Malformed JSON — log warning and treat as plain text
+    process.stderr.write(
+      `rlmx: warning: skipping malformed JSONL line: ${trimmed.slice(0, 80)}...\n`
+    );
+    return { timestamp: null, type: null, content: trimmed };
+  }
+}
