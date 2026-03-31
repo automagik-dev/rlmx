@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS records (
   source         TEXT,
   session_id     TEXT,
   content        TEXT NOT NULL,
-  content_tsvector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
+  content_tsvector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', left(content, 500000))) STORED
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_tsvector ON records USING GIN (content_tsvector);
@@ -146,7 +146,7 @@ export class PgStorage {
 
   /** Connection string for the running pgserve instance */
   get connectionString(): string {
-    return `postgresql://localhost:${this.port}/${RLMX_DB}`;
+    return `postgresql://postgres:postgres@127.0.0.1:${this.port}/${RLMX_DB}`;
   }
 
   /** Get the underlying pg Client (for observability recorder). */
