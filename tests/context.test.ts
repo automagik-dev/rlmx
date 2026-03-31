@@ -143,9 +143,11 @@ describe("context loading", () => {
 
   it("yaml context.extensions propagates to config correctly (regression #28)", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-ctx-"));
-    // Create an rlmx.yaml with custom extensions (without dots, as users often write)
+    // Create .rlmx/rlmx.yaml with custom extensions (without dots, as users often write)
+    const rlmxDir = join(dir, ".rlmx");
+    await mkdir(rlmxDir, { recursive: true });
     await writeFile(
-      join(dir, "rlmx.yaml"),
+      join(rlmxDir, "rlmx.yaml"),
       "context:\n  extensions: [mdx, json]\n"
     );
 
@@ -159,8 +161,10 @@ describe("context loading", () => {
 
   it("yaml context.extensions with dots propagates correctly (regression #28)", async () => {
     dir = await mkdtemp(join(tmpdir(), "rlmx-ctx-"));
+    const rlmxDir = join(dir, ".rlmx");
+    await mkdir(rlmxDir, { recursive: true });
     await writeFile(
-      join(dir, "rlmx.yaml"),
+      join(rlmxDir, "rlmx.yaml"),
       "context:\n  extensions: [.mdx, .json]\n"
     );
 

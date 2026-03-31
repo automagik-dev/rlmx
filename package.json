@@ -1,6 +1,6 @@
 {
   "name": "@automagik/rlmx",
-  "version": "0.260331.2",
+  "version": "0.260331.4",
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "publishConfig": {
@@ -13,11 +13,12 @@
   "types": "./dist/src/index.d.ts",
   "files": [
     "dist/src",
+    "src/templates",
     "python/*.py",
     "examples"
   ],
   "scripts": {
-    "build": "tsc && cp src/benchmark-data.json dist/src/",
+    "build": "tsc && cp src/benchmark-data.json dist/src/ && cp -r src/templates dist/src/templates",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "node --test dist/tests/*.test.js",
