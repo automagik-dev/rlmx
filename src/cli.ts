@@ -303,6 +303,29 @@ async function runQuery(opts: CliOptions): Promise<void> {
     }
   }
 
+  // Validate context size and auto-adjust cache/storage modes
+  let storageMode = false;
+  if (context) {
+    const validation = validateContextSize(context, config.model.provider);
+    if (!validation.valid) {
+      // Context exceeds model limit — disable cache mode if it was enabled
+      if (opts.cache || config.cache.enabled) {
+        console.error(
+          `rlmx: context exceeds model limit (~${validation.estimatedTokens.toLocaleString()} tokens > ${validation.limit.toLocaleString()}), disabling cache mode`
+        );
+        opts.cache = false;
+        config.cache.enabled = false;
+      }
+      // Signal storage mode when enabled is 'auto' or 'always'
+      if (config.storage.enabled === "auto" || config.storage.enabled === "always") {
+        storageMode = true;
+        console.error(
+          `rlmx: storage mode activated for large context (~${validation.estimatedTokens.toLocaleString()} tokens)`
+        );
+      }
+    }
+  }
+
   // Read query from stdin if not provided as argument
   let query = opts.query;
   if (!query && !process.stdin.isTTY) {
@@ -322,6 +345,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
     verbose: opts.verbose,
     output: opts.output,
     cache: opts.cache,
+    storageMode,
     logger,
   });
 
@@ -531,6 +555,19 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
     }
   }
 
+  // Validate context size and auto-adjust cache mode for batch
+  let batchCache = true;
+  if (context) {
+    const validation = validateContextSize(context, config.model.provider);
+    if (!validation.valid) {
+      console.error(
+        `rlmx: context exceeds model limit (~${validation.estimatedTokens.toLocaleString()} tokens > ${validation.limit.toLocaleString()}), disabling cache mode (using REPL externalization)`
+      );
+      batchCache = false;
+      config.cache.enabled = false;
+    }
+  }
+
   if (opts.verbose) {
     console.error(`rlmx batch: processing ${opts.batchFile}`);
   }
@@ -539,7 +576,7 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
     maxIterations: opts.maxIterations,
     timeout: opts.timeout,
     verbose: opts.verbose,
-    cache: true,
+    cache: batchCache,
     maxCost: opts.maxCost ?? undefined,
     parallel: opts.parallel,
   });

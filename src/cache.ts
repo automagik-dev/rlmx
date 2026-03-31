@@ -12,7 +12,7 @@ import type { RlmxConfig, CacheConfig } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
 
 // Provider context window limits (approximate token counts)
-const PROVIDER_LIMITS: Record<string, number> = {
+export const PROVIDER_LIMITS: Record<string, number> = {
   anthropic: 200000,
   openai: 128000,
   google: 1000000,     // Gemini supports 1M+

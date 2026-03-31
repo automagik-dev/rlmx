@@ -42,6 +42,8 @@ export interface RLMOptions {
   verbose: boolean;
   output: "text" | "json" | "stream";
   cache: boolean;
+  /** When true, route context through pgserve storage instead of REPL variable. */
+  storageMode?: boolean;
   logger?: Logger;
 }
 
