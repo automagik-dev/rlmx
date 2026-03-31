@@ -33,6 +33,67 @@ CREATE INDEX IF NOT EXISTS idx_records_tsvector ON records USING GIN (content_ts
 CREATE INDEX IF NOT EXISTS idx_records_timestamp ON records (timestamp) WHERE timestamp IS NOT NULL;
 `;
 
+/** Schema DDL for observability tables */
+const OBSERVABILITY_DDL = `
+CREATE TABLE IF NOT EXISTS rlmx_sessions (
+  id             TEXT PRIMARY KEY,
+  query          TEXT NOT NULL,
+  context_path   TEXT,
+  model          TEXT NOT NULL,
+  provider       TEXT NOT NULL,
+  status         TEXT DEFAULT 'running',
+  config         JSONB,
+  started_at     TIMESTAMPTZ DEFAULT now(),
+  ended_at       TIMESTAMPTZ,
+  iterations     INT,
+  input_tokens   BIGINT DEFAULT 0,
+  output_tokens  BIGINT DEFAULT 0,
+  cached_tokens  BIGINT DEFAULT 0,
+  total_cost     NUMERIC(10,6) DEFAULT 0,
+  answer_length  INT,
+  budget_hit     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rlmx_events (
+  id             BIGSERIAL PRIMARY KEY,
+  session_id     TEXT REFERENCES rlmx_sessions(id),
+  iteration      INT,
+  kind           TEXT NOT NULL,
+  input_tokens   INT,
+  output_tokens  INT,
+  cost           NUMERIC(10,6),
+  model          TEXT,
+  code           TEXT,
+  stdout         TEXT,
+  stderr         TEXT,
+  request_type   TEXT,
+  prompt_preview TEXT,
+  duration_ms    INT,
+  is_error       BOOLEAN DEFAULT false,
+  error_message  TEXT,
+  data           JSONB,
+  created_at     TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE OR REPLACE VIEW v_cost_breakdown AS
+SELECT session_id, model,
+  COUNT(*) AS calls,
+  SUM(input_tokens) AS total_input,
+  SUM(output_tokens) AS total_output,
+  SUM(cost) AS total_cost,
+  AVG(duration_ms)::INT AS avg_duration_ms
+FROM rlmx_events WHERE kind = 'llm_call'
+GROUP BY session_id, model;
+
+CREATE OR REPLACE VIEW v_repl_usage AS
+SELECT session_id, request_type,
+  COUNT(*) AS calls,
+  SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS errors,
+  AVG(duration_ms)::INT AS avg_duration_ms
+FROM rlmx_events WHERE kind IN ('sub_call', 'pg_query', 'repl_exec')
+GROUP BY session_id, request_type;
+`;
+
 /** Resolve ~ in paths to the user's home directory */
 function expandHome(p: string): string {
   if (p.startsWith("~/") || p === "~") {
@@ -63,6 +124,11 @@ export class PgStorage {
   /** Connection string for the running pgserve instance */
   get connectionString(): string {
     return `postgresql://localhost:${this.port}/${RLMX_DB}`;
+  }
+
+  /** Get the underlying pg Client (for observability recorder). */
+  getClient(): InstanceType<typeof Client> | null {
+    return this.client;
   }
 
   /**
@@ -113,6 +179,7 @@ export class PgStorage {
     this.client = new Client({ connectionString: this.connectionString });
     await this.client.connect();
     await this.client.query(SCHEMA_DDL);
+    await this.client.query(OBSERVABILITY_DDL);
 
     return this.connectionString;
   }
