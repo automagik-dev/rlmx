@@ -77,14 +77,15 @@ export function hasStatsData(): boolean {
 }
 
 /**
- * Parse a "since" duration string (e.g., "24h", "7d", "30m") into a SQL interval.
+ * Parse a "since" duration string (e.g., "24h", "7d", "30m") into a JS Date cutoff.
  */
-function parseSince(since: string): string {
+function parseSinceCutoff(since: string): Date {
   const match = since.match(/^(\d+)([mhd])$/);
   if (!match) throw new Error(`Invalid --since format "${since}". Use Nh, Nd, or Nm (e.g., 24h, 7d, 30m).`);
-  const [, num, unit] = match;
-  const unitMap: Record<string, string> = { m: "minutes", h: "hours", d: "days" };
-  return `${num} ${unitMap[unit]}`;
+  const num = parseInt(match[1], 10);
+  const unit = match[2];
+  const msMap: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return new Date(Date.now() - num * msMap[unit]);
 }
 
 /**
@@ -111,7 +112,8 @@ export async function listRuns(storage: PgStorage, limit = 20): Promise<SessionR
             EXTRACT(EPOCH FROM (COALESCE(ended_at, now()) - started_at))::int * 1000 AS duration_ms
      FROM rlmx_sessions
      ORDER BY started_at DESC
-     LIMIT ${limit}`
+     LIMIT $1`,
+    [limit]
   );
   return rows as SessionRow[];
 }
@@ -125,8 +127,9 @@ export async function getRun(storage: PgStorage, runId: string): Promise<EventRo
             model, code, stdout, stderr, request_type, prompt_preview,
             duration_ms, is_error, error_message, created_at::text
      FROM rlmx_events
-     WHERE session_id = '${runId.replace(/'/g, "''")}'
-     ORDER BY id`
+     WHERE session_id = $1
+     ORDER BY id`,
+    [runId]
   );
   return rows as EventRow[];
 }
@@ -135,9 +138,23 @@ export async function getRun(storage: PgStorage, runId: string): Promise<EventRo
  * Get cost breakdown by model.
  */
 export async function costBreakdown(storage: PgStorage, since?: string): Promise<CostRow[]> {
-  const whereClause = since
-    ? `WHERE e.created_at >= now() - interval '${parseSince(since)}'`
-    : "";
+  if (since) {
+    const cutoff = parseSinceCutoff(since);
+    const rows = await storage.query(
+      `SELECT e.session_id, e.model,
+              COUNT(*)::int AS calls,
+              SUM(e.input_tokens)::int AS total_input,
+              SUM(e.output_tokens)::int AS total_output,
+              SUM(e.cost)::float AS total_cost,
+              AVG(e.duration_ms)::int AS avg_duration_ms
+       FROM rlmx_events e
+       WHERE e.created_at >= $1 AND e.kind = 'llm_call'
+       GROUP BY e.session_id, e.model
+       ORDER BY total_cost DESC`,
+      [cutoff.toISOString()]
+    );
+    return rows as CostRow[];
+  }
   const rows = await storage.query(
     `SELECT e.session_id, e.model,
             COUNT(*)::int AS calls,
@@ -146,7 +163,7 @@ export async function costBreakdown(storage: PgStorage, since?: string): Promise
             SUM(e.cost)::float AS total_cost,
             AVG(e.duration_ms)::int AS avg_duration_ms
      FROM rlmx_events e
-     ${whereClause ? whereClause + " AND" : "WHERE"} e.kind = 'llm_call'
+     WHERE e.kind = 'llm_call'
      GROUP BY e.session_id, e.model
      ORDER BY total_cost DESC`
   );
@@ -157,16 +174,28 @@ export async function costBreakdown(storage: PgStorage, since?: string): Promise
  * Get tool/sub-call usage.
  */
 export async function toolUsage(storage: PgStorage, since?: string): Promise<ToolRow[]> {
-  const whereClause = since
-    ? `WHERE e.created_at >= now() - interval '${parseSince(since)}'`
-    : "";
+  if (since) {
+    const cutoff = parseSinceCutoff(since);
+    const rows = await storage.query(
+      `SELECT e.session_id, e.request_type,
+              COUNT(*)::int AS calls,
+              SUM(CASE WHEN e.is_error THEN 1 ELSE 0 END)::int AS errors,
+              AVG(e.duration_ms)::int AS avg_duration_ms
+       FROM rlmx_events e
+       WHERE e.created_at >= $1 AND e.kind IN ('sub_call', 'pg_query', 'repl_exec')
+       GROUP BY e.session_id, e.request_type
+       ORDER BY calls DESC`,
+      [cutoff.toISOString()]
+    );
+    return rows as ToolRow[];
+  }
   const rows = await storage.query(
     `SELECT e.session_id, e.request_type,
             COUNT(*)::int AS calls,
             SUM(CASE WHEN e.is_error THEN 1 ELSE 0 END)::int AS errors,
             AVG(e.duration_ms)::int AS avg_duration_ms
      FROM rlmx_events e
-     ${whereClause ? whereClause + " AND" : "WHERE"} e.kind IN ('sub_call', 'pg_query', 'repl_exec')
+     WHERE e.kind IN ('sub_call', 'pg_query', 'repl_exec')
      GROUP BY e.session_id, e.request_type
      ORDER BY calls DESC`
   );

@@ -6,6 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
@@ -103,6 +104,25 @@ function expandHome(p: string): string {
 }
 
 /**
+ * Find a free TCP port by binding to port 0 and reading the assigned port.
+ */
+async function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      if (addr && typeof addr === "object") {
+        const port = addr.port;
+        srv.close(() => resolve(port));
+      } else {
+        srv.close(() => reject(new Error("Failed to get free port")));
+      }
+    });
+    srv.on("error", reject);
+  });
+}
+
+/**
  * Compute adaptive chunk size based on provider limits and storage config.
  */
 export function getChunkSize(provider: string, config: StorageConfig): number {
@@ -142,8 +162,8 @@ export class PgStorage {
     // Build CLI args
     const args: string[] = [];
 
-    // Port: 0 means let pgserve pick; otherwise use the specified port
-    const requestedPort = config.port || 8432;
+    // Port: 0 means auto-assign a free port; otherwise use the specified port
+    const requestedPort = config.port === 0 ? await findFreePort() : config.port;
     args.push("--port", String(requestedPort));
 
     // Mode: persistent uses dataDir, memory uses temp
@@ -322,15 +342,17 @@ export class PgStorage {
   }
 
   /**
-   * Execute raw SQL (read-only).
+   * Execute raw SQL (read-only). Supports parameterized queries.
    */
-  async query(sql: string): Promise<unknown[]> {
+  async query(sql: string, params?: unknown[]): Promise<unknown[]> {
     if (!this.client) throw new Error("PgStorage not started");
 
     // Wrap in read-only transaction for safety
     await this.client.query("BEGIN TRANSACTION READ ONLY");
     try {
-      const result = await this.client.query(sql);
+      const result = params
+        ? await this.client.query(sql, params)
+        : await this.client.query(sql);
       await this.client.query("COMMIT");
       return result.rows;
     } catch (err) {
