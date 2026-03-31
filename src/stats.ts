@@ -9,7 +9,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { PgStorage } from "./storage.js";
-import { DEFAULT_STORAGE_CONFIG } from "./config.js";
+import { loadConfig } from "./config.js";
 
 /** A session row from rlmx_sessions */
 export interface SessionRow {
@@ -70,8 +70,9 @@ export interface ToolRow {
 /**
  * Check if persistent data directory exists.
  */
-export function hasStatsData(): boolean {
-  const dataDir = DEFAULT_STORAGE_CONFIG.dataDir.replace(/^~/, homedir());
+export async function hasStatsData(): Promise<boolean> {
+  const config = await loadConfig(process.cwd());
+  const dataDir = config.storage.dataDir.replace(/^~/, homedir());
   return existsSync(dataDir);
 }
 
@@ -88,12 +89,13 @@ function parseSinceCutoff(since: string): Date {
 }
 
 /**
- * Create a temporary PgStorage connected to ~/.rlmx/data for querying stats.
+ * Create a temporary PgStorage connected to the configured data directory for querying stats.
  */
 async function createStatsStorage(): Promise<PgStorage> {
+  const config = await loadConfig(process.cwd());
   const storage = new PgStorage();
   await storage.start({
-    ...DEFAULT_STORAGE_CONFIG,
+    ...config.storage,
     mode: "persistent",
     enabled: "always",
   });
@@ -351,7 +353,7 @@ export function formatToolTable(rows: ToolRow[]): string {
  */
 export async function runStatsCommand(args: string[]): Promise<void> {
   // Check for data
-  if (!hasStatsData()) {
+  if (!(await hasStatsData())) {
     console.log("No stats yet. Run a query first.");
     return;
   }

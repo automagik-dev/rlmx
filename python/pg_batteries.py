@@ -66,7 +66,7 @@ def pg_search(pattern, limit=20):
         limit: Max results (default 20)
 
     Returns:
-        List of {line_num, content, rank} dicts
+        List of {line_num, source, content, rank} dicts
     """
     result = _pg_request("pg_search", {"pattern": pattern, "limit": limit})
     if isinstance(result, list):
@@ -82,14 +82,36 @@ def pg_slice(start, end):
         end: Ending line number (exclusive)
 
     Returns:
-        String with content of the requested lines
+        String with source and content of the requested lines
     """
     result = _pg_request("pg_slice", {"start": start, "end": end})
     if isinstance(result, list):
-        content = "\n".join(r.get("content", "") if isinstance(r, dict) else str(r) for r in result)
+        lines = []
+        for r in result:
+            if isinstance(r, dict):
+                src = r.get("source", "")
+                content = r.get("content", "")
+                lines.append(f"[{src}] {content}" if src else content)
+            else:
+                lines.append(str(r))
+        content = "\n".join(lines)
         if len(content) > 2000:
             return content[:2000] + f"\n... [truncated, {len(result)} lines total]"
         return content
+    return result
+
+
+def pg_sources():
+    """List distinct source files in the stored context.
+
+    Returns:
+        List of source file paths
+    """
+    result = _pg_request("pg_query", {
+        "sql": "SELECT DISTINCT source FROM records WHERE source IS NOT NULL ORDER BY source"
+    })
+    if isinstance(result, list):
+        return [r.get("source", "") if isinstance(r, dict) else str(r) for r in result]
     return result
 
 

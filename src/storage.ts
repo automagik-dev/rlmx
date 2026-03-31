@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS records (
   timestamp      TIMESTAMPTZ,
   type           TEXT,
   source         TEXT,
+  session_id     TEXT,
   content        TEXT NOT NULL,
   content_tsvector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
 );
@@ -211,7 +212,7 @@ export class PgStorage {
    * For JSONL: parses each line as JSON, extracts timestamp/type fields.
    * For other text: one record per line.
    */
-  async ingest(context: LoadedContext): Promise<number> {
+  async ingest(context: LoadedContext, sessionId?: string): Promise<number> {
     if (!this.client) throw new Error("PgStorage not started");
 
     // Clear stale records so re-runs with different context don't keep old data
@@ -247,14 +248,14 @@ export class PgStorage {
         const { timestamp, type, content } = parseLine(text);
         const idx = values.length;
         placeholders.push(
-          `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5})`
+          `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5}, $${idx + 6})`
         );
-        values.push(lineNum, timestamp, type, source, content);
+        values.push(lineNum, timestamp, type, source, sessionId ?? null, content);
       }
 
       if (placeholders.length > 0) {
         await this.client.query(
-          `INSERT INTO records (line_num, timestamp, type, source, content)
+          `INSERT INTO records (line_num, timestamp, type, source, session_id, content)
            VALUES ${placeholders.join(", ")}`,
           values
         );
@@ -285,7 +286,7 @@ export class PgStorage {
     if (!tsquery) return [];
 
     const result = await this.client.query(
-      `SELECT line_num, content, ts_rank(content_tsvector, to_tsquery('english', $1)) AS rank
+      `SELECT line_num, source, content, ts_rank(content_tsvector, to_tsquery('english', $1)) AS rank
        FROM records
        WHERE content_tsvector @@ to_tsquery('english', $1)
        ORDER BY rank DESC
@@ -295,6 +296,7 @@ export class PgStorage {
 
     return result.rows.map((r) => ({
       line_num: r.line_num,
+      source: r.source,
       content: r.content,
       rank: parseFloat(r.rank),
     }));
@@ -310,7 +312,7 @@ export class PgStorage {
     if (!this.client) throw new Error("PgStorage not started");
 
     const result = await this.client.query(
-      `SELECT line_num, content FROM records
+      `SELECT line_num, source, content FROM records
        WHERE line_num >= $1 AND line_num < $2
        ORDER BY line_num`,
       [start, end]
@@ -354,11 +356,6 @@ export class PgStorage {
    */
   async query(sql: string, params?: unknown[]): Promise<unknown[]> {
     if (!this.client) throw new Error("PgStorage not started");
-
-    // Enforce single-statement only to prevent injection via chained statements
-    if (sql.includes(";")) {
-      throw new Error("Only single SQL statements allowed");
-    }
 
     // Wrap in read-only transaction for safety
     await this.client.query("BEGIN TRANSACTION READ ONLY");
@@ -458,7 +455,7 @@ export class PgStorage {
 
     while (Date.now() < deadline) {
       // Fail fast if the process already exited
-      if (this.process?.exitCode !== null && this.process?.exitCode !== undefined) {
+      if (this.process && typeof this.process.exitCode === 'number') {
         throw new Error(`pgserve exited with code ${this.process.exitCode} before becoming ready`);
       }
 
