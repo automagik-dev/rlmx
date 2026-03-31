@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import type { RlmxConfig, ModelConfig, GeminiConfig } from "./config.js";
 import type { LLMRequest } from "./ipc.js";
 import type { Logger } from "./logger.js";
+import type { PgStorage } from "./storage.js";
 import { buildGeminiOnPayload, isGoogleProvider, type ThinkingLevel } from "./gemini.js";
 
 /** Token usage tracking. */
@@ -384,7 +385,8 @@ export async function handleLLMRequest(
   config: RlmxConfig,
   usage: UsageStats,
   signal?: AbortSignal,
-  geminiCounts?: GeminiCallCounts
+  geminiCounts?: GeminiCallCounts,
+  storage?: PgStorage
 ): Promise<string[]> {
   const subCallModel: ModelConfig = config.model.subCallModel
     ? { ...config.model, model: config.model.subCallModel }
@@ -485,6 +487,40 @@ export async function handleLLMRequest(
       );
       mergeUsage(usage, igResp.usage);
       return [igResp.text];
+    }
+
+    case "pg_search": {
+      if (!storage) return [`Error: storage not available`];
+      const params = JSON.parse(request.prompts[0]);
+      const rows = await storage.search(params.pattern, params.limit);
+      return [JSON.stringify(rows)];
+    }
+
+    case "pg_slice": {
+      if (!storage) return [`Error: storage not available`];
+      const params = JSON.parse(request.prompts[0]);
+      const rows = await storage.slice(params.start, params.end);
+      return [JSON.stringify(rows)];
+    }
+
+    case "pg_time": {
+      if (!storage) return [`Error: storage not available`];
+      const params = JSON.parse(request.prompts[0]);
+      const rows = await storage.timeRange(params.from, params.to);
+      return [JSON.stringify(rows)];
+    }
+
+    case "pg_count": {
+      if (!storage) return [`Error: storage not available`];
+      const cnt = await storage.count();
+      return [JSON.stringify({ count: cnt })];
+    }
+
+    case "pg_query": {
+      if (!storage) return [`Error: storage not available`];
+      const params = JSON.parse(request.prompts[0]);
+      const rows = await storage.query(params.sql);
+      return [JSON.stringify(rows)];
     }
 
     default:

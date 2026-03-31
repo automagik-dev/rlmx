@@ -9,10 +9,13 @@
  * - Recursive sub-calls via llm_query/rlm_query
  */
 
+import { randomUUID } from "node:crypto";
 import type { RlmxConfig, ToolDef } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
 import { buildCachedSystemPrompt, computeContentHash, buildSessionId, estimateTokens } from "./cache.js";
 import { REPL } from "./repl.js";
+import { PgStorage } from "./storage.js";
+import { ObservabilityRecorder } from "./observe.js";
 import {
   llmComplete,
   handleLLMRequest,
@@ -42,6 +45,8 @@ export interface RLMOptions {
   verbose: boolean;
   output: "text" | "json" | "stream";
   cache: boolean;
+  /** When true, route context through pgserve storage instead of REPL variable. */
+  storageMode?: boolean;
   logger?: Logger;
 }
 
@@ -66,7 +71,8 @@ function isStructuredOutputMode(config: RlmxConfig): boolean {
  */
 function buildSystemPrompt(
   config: RlmxConfig,
-  _context: LoadedContext | null
+  _context: LoadedContext | null,
+  storageRecordCount?: number
 ): string {
   // Use SYSTEM.md content or paper default (from scaffold)
   let system = config.system ?? "";
@@ -84,6 +90,19 @@ function buildSystemPrompt(
     system +=
       "\n\n## Output Criteria\n\nWhen providing your FINAL answer, follow these criteria:\n" +
       config.criteria;
+  }
+
+  // Append storage mode instructions when context is in PostgreSQL
+  if (storageRecordCount !== undefined) {
+    system +=
+      `\n\n## Context Storage\n\n` +
+      `Context is stored in PostgreSQL (~${storageRecordCount.toLocaleString()} records). Use these tools to query it:\n` +
+      `- pg_search("pattern") — full-text search\n` +
+      `- pg_slice(start, end) — get lines by range\n` +
+      `- pg_time("HH:MM", "HH:MM") — filter by timestamp\n` +
+      `- pg_count() — total records\n` +
+      `- pg_query("SQL") — raw SQL (read-only)\n` +
+      `Do NOT try to access the \`context\` variable directly — it is not loaded in memory.`;
   }
 
   return system;
@@ -175,11 +194,45 @@ export async function rlmLoop(
   const geminiCounts = createGeminiCallCounts();
   const budget = new BudgetTracker(config.budget);
 
-  // Build system prompt — cache mode embeds full context, normal mode uses metadata only
+  // ── Storage mode setup ──────────────────────────────────
+  let storage: PgStorage | undefined;
+  let recorder: ObservabilityRecorder | undefined;
+  let storageRecordCount: number | undefined;
+  const runId = randomUUID();
+
+  if (opts.storageMode) {
+    storage = new PgStorage();
+    await storage.start(config.storage);
+
+    // Ingest context into Postgres
+    if (context) {
+      storageRecordCount = await storage.ingest(context);
+      if (opts.verbose) {
+        process.stderr.write(`rlmx: ingested ${storageRecordCount} records into pgserve storage\n`);
+      }
+    }
+
+    // Set up observability recorder
+    recorder = new ObservabilityRecorder(storage);
+    recorder.startSession(
+      runId,
+      query,
+      `${config.model.provider}/${config.model.model}`,
+      config.model.provider,
+      undefined,
+      config as unknown as Record<string, unknown>
+    );
+  }
+
+  // Build system prompt — cache mode embeds full context, storage mode adds pg_* tools, normal mode uses metadata only
   const systemPrompt = opts.cache
     ? buildCachedSystemPrompt(config, context)
-    : buildSystemPrompt(config, context);
-  const contextMetadata = buildContextMetadata(context);
+    : buildSystemPrompt(config, context, storageRecordCount);
+
+  // In storage mode, override context metadata to describe storage
+  const contextMetadata = opts.storageMode && storageRecordCount !== undefined
+    ? `Context is stored in PostgreSQL (~${storageRecordCount.toLocaleString()} records). Use pg_search(), pg_slice(), pg_time(), pg_count(), pg_query() to query it.`
+    : buildContextMetadata(context);
 
   // Build cache config for LLM calls (passed through to pi/ai completeSimple)
   let cacheConfig: CacheLLMConfig | undefined;
@@ -211,8 +264,8 @@ export async function rlmLoop(
   const repl = new REPL();
 
   try {
-    // Start REPL with context and custom tools
-    const replContext = prepareReplContext(context);
+    // Start REPL — in storage mode, skip raw context injection and load pg_batteries
+    const replContext = opts.storageMode ? undefined : prepareReplContext(context);
     const toolsMap: Record<string, string> = {};
     for (const tool of config.tools) {
       toolsMap[tool.name] = tool.code;
@@ -222,24 +275,47 @@ export async function rlmLoop(
       context: replContext as string | string[] | Record<string, unknown>,
       tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
       loadGeminiBatteries: isGoogleProvider(config.model.provider) && (config.toolsLevel === "standard" || config.toolsLevel === "full"),
+      loadPgBatteries: !!opts.storageMode,
       toolsLevel: config.toolsLevel,
     });
 
-    // Set up LLM request handler for REPL IPC
+    // Set up LLM request handler for REPL IPC — pass storage for pg_* routes
     repl.onLLMRequest(async (request) => {
-      return handleLLMRequest(
+      const startMs = Date.now();
+      const results = await handleLLMRequest(
         request,
         config,
         usage,
         abortController.signal,
-        geminiCounts
+        geminiCounts,
+        storage
       );
+      // Record sub-calls to observability
+      if (recorder && request.request_type !== "llm_query" && request.request_type !== "llm_query_batched") {
+        recorder.recordSubCall(
+          0, // iteration not available here; will be approximate
+          request.request_type,
+          request.prompts[0]?.slice(0, 200) ?? "",
+          Date.now() - startMs
+        );
+      }
+      return results;
     });
 
-    /** Cleanup timeout/REPL and build the final result. */
+    /** Cleanup timeout/REPL/storage and build the final result. */
     const finalize = async (answer: string, iterations: number): Promise<RLMResult> => {
       clearTimeout(timeoutHandle);
+      // Record final observability event
+      if (recorder) {
+        recorder.recordFinal(answer, iterations, {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cachedTokens: usage.cacheReadTokens,
+          totalCost: usage.totalCost,
+        });
+      }
       await repl.stop();
+      if (storage) await storage.stop();
       return buildResult(answer, usage, iterations, config, budget.getState().budgetHit, geminiCounts, repl.getGeminiBatteriesUsed());
     };
 
@@ -275,6 +351,7 @@ export async function rlmLoop(
       }
 
       // Call LLM
+      const llmStartMs = Date.now();
       const response = await llmComplete(messages, config.model, {
         signal: abortController.signal,
         cacheConfig,
@@ -282,8 +359,19 @@ export async function rlmLoop(
         outputSchema: config.output.schema,
         geminiConfig: config.gemini,
       });
+      const llmDurationMs = Date.now() - llmStartMs;
       mergeUsage(usage, response.usage);
       budget.record(response.usage.inputTokens, response.usage.outputTokens, response.usage.totalCost);
+
+      // Record LLM call to observability
+      if (recorder) {
+        recorder.recordLLMCall(
+          iteration,
+          { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: response.usage.totalCost },
+          `${config.model.provider}/${config.model.model}`,
+          llmDurationMs
+        );
+      }
 
       // Track thought signatures for Gemini stats
       if (response.thoughtSignatureCount) {
@@ -355,7 +443,9 @@ export async function rlmLoop(
           logVerbose(iteration, `executing code (${block.code.length} chars)`);
         }
 
+        const execStartMs = Date.now();
         const execResult = await repl.execute(block.code);
+        const execDurationMs = Date.now() - execStartMs;
 
         executions.push({
           code: block.code,
@@ -364,6 +454,14 @@ export async function rlmLoop(
           variables: execResult.variables,
           error: execResult.error,
         });
+
+        // Record REPL execution to observability
+        if (recorder) {
+          recorder.recordReplExec(
+            iteration, block.code, execResult.stdout, execResult.stderr ?? "",
+            execDurationMs, !!execResult.error
+          );
+        }
 
         if (execResult.final) {
           return finalize(execResult.final.value, iteration + 1);
@@ -470,7 +568,9 @@ export async function rlmLoop(
         `rlmx: 3 consecutive empty LLM responses — aborting. Context may exceed API limits.\n`
       );
       clearTimeout(timeoutHandle);
+      if (recorder) recorder.recordError("empty_responses");
       await repl.stop();
+      if (storage) await storage.stop();
 
       return buildResult(
         "Error: aborted after 3 consecutive empty LLM responses. Context may exceed API token limits.",
@@ -493,7 +593,9 @@ export async function rlmLoop(
     return finalize(forcedResult, actualIterations);
   } catch (err: unknown) {
     clearTimeout(timeoutHandle);
+    if (recorder) recorder.recordError(err instanceof Error ? err.message : String(err));
     await repl.stop().catch(() => {});
+    if (storage) await storage.stop().catch(() => {});
 
     if ((err instanceof Error && err.name === "AbortError") || abortController.signal.aborted) {
       return buildResult(

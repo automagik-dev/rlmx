@@ -1,6 +1,6 @@
 {
   "name": "@automagik/rlmx",
-  "version": "0.260330.13",
+  "version": "0.260331.1",
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "publishConfig": {
@@ -17,7 +17,7 @@
     "examples"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/benchmark-data.json dist/src/",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "node --test dist/tests/*.test.js",
@@ -27,13 +27,16 @@
   },
   "dependencies": {
     "@mariozechner/pi-ai": "0.64.0",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "pg": "^8.20.0",
+    "pgserve": "^1.1.6"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.0.0",
     "@commitlint/config-conventional": "^19.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
     "husky": "^9.0.0",
     "typescript": "^5.7.0"
   },

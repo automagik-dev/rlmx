@@ -50,6 +50,11 @@ def _send_request(request_type: str, prompts: list, model=None) -> list:
             return [f"Error: invalid JSON response: {e}"] * len(prompts)
 
 
+def send_request(request_type: str, prompts: list, model=None) -> list:
+    """Public interface for sending IPC requests to Node.js parent process."""
+    return _send_request(request_type, prompts, model)
+
+
 def llm_query(prompt: str, model=None) -> str:
     """Query the LLM with a single prompt. Returns the response string."""
     results = _send_request("llm_query", [prompt], model)
