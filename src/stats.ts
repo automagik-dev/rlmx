@@ -7,7 +7,6 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
 import { PgStorage } from "./storage.js";
 import { DEFAULT_STORAGE_CONFIG } from "./config.js";
@@ -72,7 +71,7 @@ export interface ToolRow {
  * Check if persistent data directory exists.
  */
 export function hasStatsData(): boolean {
-  const dataDir = join(homedir(), ".rlmx", "data");
+  const dataDir = DEFAULT_STORAGE_CONFIG.dataDir.replace(/^~/, homedir());
   return existsSync(dataDir);
 }
 

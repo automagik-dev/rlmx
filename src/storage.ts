@@ -7,9 +7,10 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 import pg from "pg";
 import type { StorageConfig } from "./config.js";
 import type { LoadedContext, ContextItem } from "./context.js";
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS records (
   line_num       INT PRIMARY KEY,
   timestamp      TIMESTAMPTZ,
   type           TEXT,
+  source         TEXT,
   content        TEXT NOT NULL,
   content_tsvector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
 );
@@ -212,13 +214,20 @@ export class PgStorage {
   async ingest(context: LoadedContext): Promise<number> {
     if (!this.client) throw new Error("PgStorage not started");
 
-    // Collect all lines from context
-    let lines: string[];
+    // Clear stale records so re-runs with different context don't keep old data
+    await this.client.query("TRUNCATE records");
+
+    // Collect all lines from context, tracking source file when available
+    let lines: Array<{ text: string; source: string | null }>;
     if (context.type === "list") {
       const items = context.content as ContextItem[];
-      lines = items.flatMap((item) => item.content.split("\n"));
+      lines = items.flatMap((item) =>
+        item.content.split("\n").map((text) => ({ text, source: item.path }))
+      );
     } else {
-      lines = (context.content as string).split("\n");
+      lines = (context.content as string)
+        .split("\n")
+        .map((text) => ({ text, source: null }));
     }
 
     // Batch insert using multi-row VALUES
@@ -232,22 +241,21 @@ export class PgStorage {
 
       for (let j = 0; j < batch.length; j++) {
         const lineNum = i + j;
-        const line = batch[j];
-        if (line.trim() === "") continue;
+        const { text, source } = batch[j];
+        if (text.trim() === "") continue;
 
-        const { timestamp, type, content } = parseLine(line);
+        const { timestamp, type, content } = parseLine(text);
         const idx = values.length;
         placeholders.push(
-          `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4})`
+          `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5})`
         );
-        values.push(lineNum, timestamp, type, content);
+        values.push(lineNum, timestamp, type, source, content);
       }
 
       if (placeholders.length > 0) {
         await this.client.query(
-          `INSERT INTO records (line_num, timestamp, type, content)
-           VALUES ${placeholders.join(", ")}
-           ON CONFLICT (line_num) DO NOTHING`,
+          `INSERT INTO records (line_num, timestamp, type, source, content)
+           VALUES ${placeholders.join(", ")}`,
           values
         );
         ingested += placeholders.length;
@@ -347,6 +355,11 @@ export class PgStorage {
   async query(sql: string, params?: unknown[]): Promise<unknown[]> {
     if (!this.client) throw new Error("PgStorage not started");
 
+    // Enforce single-statement only to prevent injection via chained statements
+    if (sql.includes(";")) {
+      throw new Error("Only single SQL statements allowed");
+    }
+
     // Wrap in read-only transaction for safety
     await this.client.query("BEGIN TRANSACTION READ ONLY");
     try {
@@ -413,9 +426,13 @@ export class PgStorage {
 
   /** Find the pgserve CLI binary in node_modules */
   private findPgserveBin(): string {
-    // Look for the wrapper script in node_modules/.bin
-    const binPath = resolve("node_modules", ".bin", "pgserve");
-    return binPath;
+    // Try package-relative first (works for global installs), then cwd fallback
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const pkgBin = join(__dirname, "..", "..", "node_modules", ".bin", "pgserve");
+    if (existsSync(pkgBin)) return pkgBin;
+
+    // Fallback: resolve from cwd (works for local dev)
+    return resolve("node_modules", ".bin", "pgserve");
   }
 
   /**
@@ -440,6 +457,11 @@ export class PgStorage {
     });
 
     while (Date.now() < deadline) {
+      // Fail fast if the process already exited
+      if (this.process?.exitCode !== null && this.process?.exitCode !== undefined) {
+        throw new Error(`pgserve exited with code ${this.process.exitCode} before becoming ready`);
+      }
+
       try {
         const testClient = new Client({
           connectionString: this.connectionString,

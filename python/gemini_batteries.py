@@ -22,7 +22,7 @@ def web_search(query: str) -> str:
 
     Returns search results as text. Only available with provider: google.
     """
-    results = llm_bridge._send_request("web_search", [query])
+    results = llm_bridge.send_request("web_search", [query])
     return results[0] if results else "Error: no response from web_search"
 
 
@@ -31,7 +31,7 @@ def fetch_url(url: str) -> str:
 
     Returns page content as text. Only available with provider: google.
     """
-    results = llm_bridge._send_request("fetch_url", [url])
+    results = llm_bridge.send_request("fetch_url", [url])
     return results[0] if results else "Error: no response from fetch_url"
 
 
@@ -42,5 +42,5 @@ def generate_image(prompt: str, aspect_ratio: str = "16:9", size: str = "2K") ->
     Only available with provider: google.
     """
     full_prompt = f"{prompt} [aspect_ratio={aspect_ratio}, size={size}]"
-    results = llm_bridge._send_request("generate_image", [full_prompt])
+    results = llm_bridge.send_request("generate_image", [full_prompt])
     return results[0] if results else "Error: no response from generate_image"

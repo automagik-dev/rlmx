@@ -16,7 +16,7 @@ import llm_bridge
 def _pg_request(request_type, params=None):
     """Send a pg_* request to Node.js PgStorage and return parsed result."""
     payload = json.dumps(params) if params else "{}"
-    results = llm_bridge._send_request(request_type, [payload])
+    results = llm_bridge.send_request(request_type, [payload])
     if not results:
         return None
     raw = results[0]
