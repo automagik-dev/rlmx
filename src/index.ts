@@ -1,4 +1,4 @@
-export { loadConfig, hasConfig, parseToolsMd, parseModelMd } from "./config.js";
+export { loadConfig, hasConfig, parseToolsMd } from "./config.js";
 export type { RlmxConfig, ToolDef, ModelConfig, BudgetConfig, ContextConfig, ToolsLevel, GeminiConfig, MediaResolutionConfig, OutputConfig } from "./config.js";
 
 export {

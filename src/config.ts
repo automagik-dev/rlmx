@@ -101,8 +101,8 @@ export interface RlmxConfig {
   output: OutputConfig;
   /** Storage configuration for pgserve */
   storage: StorageConfig;
-  /** Config source: "yaml" | "md" | "defaults" */
-  configSource: "yaml" | "md" | "defaults";
+  /** Config source: "yaml" | "defaults" */
+  configSource: "yaml" | "defaults";
 }
 
 // ─── Defaults ────────────────────────────────────────────
@@ -156,16 +156,14 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
 
 // ─── YAML Schema ─────────────────────────────────────────
 
-/** Shape of rlmx.yaml on disk */
+/** Shape of rlmx.yaml on disk (config-only — no system/criteria) */
 interface RawYamlConfig {
   model?: {
     provider?: string;
     model?: string;
     "sub-call-model"?: string;
   };
-  system?: string;
   tools?: Record<string, string>;
-  criteria?: string;
   context?: {
     extensions?: string[];
     exclude?: string[];
@@ -212,7 +210,7 @@ interface RawYamlConfig {
   };
 }
 
-// ─── YAML Loading ────────────────────────────────────────
+// ─── File Helpers ────────────────────────────────────────
 
 /**
  * Try to read a file, returning null if it doesn't exist.
@@ -236,10 +234,53 @@ function validatePositiveBudget(value: unknown, field: string): void {
   }
 }
 
+// ─── Tools.md Parsing ────────────────────────────────────
+
+/**
+ * Parse TOOLS.md format:
+ *   ## tool_name
+ *   ```python
+ *   def tool_name(...):
+ *       ...
+ *   ```
+ */
+export function parseToolsMd(content: string): ToolDef[] {
+  const tools: ToolDef[] = [];
+  const headingRegex = /^## (.+)$/gm;
+  const codeBlockRegex = /```python\s*\n([\s\S]*?)```/g;
+
+  let headingMatch: RegExpExecArray | null;
+  const headings: { name: string; index: number }[] = [];
+
+  while ((headingMatch = headingRegex.exec(content)) !== null) {
+    headings.push({ name: headingMatch[1].trim(), index: headingMatch.index });
+  }
+
+  for (let i = 0; i < headings.length; i++) {
+    const start = headings[i].index;
+    const end = i + 1 < headings.length ? headings[i + 1].index : content.length;
+    const section = content.slice(start, end);
+
+    const codeMatch = codeBlockRegex.exec(section);
+    codeBlockRegex.lastIndex = 0;
+
+    if (codeMatch) {
+      tools.push({
+        name: headings[i].name,
+        code: codeMatch[1].trim(),
+      });
+    }
+  }
+
+  return tools;
+}
+
+// ─── YAML Parsing ────────────────────────────────────────
+
 /**
  * Parse and validate an rlmx.yaml file.
  */
-function parseYamlConfig(content: string, dir: string): RlmxConfig {
+function parseYamlConfig(content: string, dir: string): Omit<RlmxConfig, "system" | "criteria" | "tools"> {
   let raw: unknown;
   try {
     raw = yaml.load(content);
@@ -254,7 +295,7 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   if (raw === null || raw === undefined || typeof raw !== "object") {
     throw new Error(
       `rlmx.yaml is empty or not a YAML mapping.\n` +
-        `Expected a YAML object with keys like model, system, tools, etc.`
+        `Expected a YAML object with keys like model, context, budget, etc.`
     );
   }
 
@@ -267,19 +308,6 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   };
   if (cfg.model?.["sub-call-model"]) {
     model.subCallModel = cfg.model["sub-call-model"];
-  }
-
-  // Parse tools (name → Python code)
-  const tools: ToolDef[] = [];
-  if (cfg.tools && typeof cfg.tools === "object") {
-    for (const [name, code] of Object.entries(cfg.tools)) {
-      if (typeof code !== "string") {
-        throw new Error(
-          `Invalid tool "${name}" in rlmx.yaml: expected Python code string, got ${typeof code}.`
-        );
-      }
-      tools.push({ name, code: code.trim() });
-    }
   }
 
   // Parse context config
@@ -322,10 +350,6 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     );
   }
   const toolsLevel = rawLevel as ToolsLevel;
-
-  // Parse system and criteria (multiline strings)
-  const system = cfg.system?.trim() || null;
-  const criteria = cfg.criteria?.trim() || null;
 
   // Parse cache config
   const rawRetention = cfg.cache?.retention ?? "long";
@@ -451,9 +475,6 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
   };
 
   return {
-    system,
-    tools,
-    criteria,
     model,
     configDir: dir,
     budget,
@@ -464,123 +485,6 @@ function parseYamlConfig(content: string, dir: string): RlmxConfig {
     output,
     storage,
     configSource: "yaml",
-  };
-}
-
-// ─── .md File Parsing (backward compat) ──────────────────
-
-const MD_CONFIG_FILES = [
-  "SYSTEM.md",
-  "CONTEXT.md",
-  "TOOLS.md",
-  "CRITERIA.md",
-  "MODEL.md",
-] as const;
-
-/**
- * Parse TOOLS.md format:
- *   ## tool_name
- *   ```python
- *   def tool_name(...):
- *       ...
- *   ```
- */
-export function parseToolsMd(content: string): ToolDef[] {
-  const tools: ToolDef[] = [];
-  const headingRegex = /^## (.+)$/gm;
-  const codeBlockRegex = /```python\s*\n([\s\S]*?)```/g;
-
-  let headingMatch: RegExpExecArray | null;
-  const headings: { name: string; index: number }[] = [];
-
-  while ((headingMatch = headingRegex.exec(content)) !== null) {
-    headings.push({ name: headingMatch[1].trim(), index: headingMatch.index });
-  }
-
-  for (let i = 0; i < headings.length; i++) {
-    const start = headings[i].index;
-    const end = i + 1 < headings.length ? headings[i + 1].index : content.length;
-    const section = content.slice(start, end);
-
-    const codeMatch = codeBlockRegex.exec(section);
-    codeBlockRegex.lastIndex = 0;
-
-    if (codeMatch) {
-      tools.push({
-        name: headings[i].name,
-        code: codeMatch[1].trim(),
-      });
-    }
-  }
-
-  return tools;
-}
-
-/**
- * Parse MODEL.md format: key: value pairs.
- */
-export function parseModelMd(content: string): ModelConfig {
-  const config: ModelConfig = {
-    provider: DEFAULT_MODEL.provider,
-    model: DEFAULT_MODEL.model,
-  };
-
-  const lines = content.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("#") || trimmed.startsWith("<!--") || !trimmed) continue;
-
-    const colonIdx = trimmed.indexOf(":");
-    if (colonIdx === -1) continue;
-
-    const key = trimmed.slice(0, colonIdx).trim().toLowerCase();
-    const value = trimmed.slice(colonIdx + 1).trim();
-
-    if (!value) continue;
-
-    switch (key) {
-      case "provider":
-        config.provider = value;
-        break;
-      case "model":
-        config.model = value;
-        break;
-      case "sub-call-model":
-      case "sub_call_model":
-      case "subcallmodel":
-        config.subCallModel = value;
-        break;
-    }
-  }
-
-  return config;
-}
-
-/**
- * Load config from individual .md files (v0.1 compat fallback).
- */
-async function loadConfigFromMd(dir: string): Promise<RlmxConfig> {
-  const [system, _context, toolsRaw, criteria, modelRaw] = await Promise.all(
-    MD_CONFIG_FILES.map((f) => readOptionalFile(join(dir, f)))
-  );
-
-  const tools = toolsRaw ? parseToolsMd(toolsRaw) : [];
-  const model = modelRaw ? parseModelMd(modelRaw) : { ...DEFAULT_MODEL };
-
-  return {
-    system,
-    tools,
-    criteria,
-    model,
-    configDir: dir,
-    budget: { ...DEFAULT_BUDGET },
-    contextConfig: { ...DEFAULT_CONTEXT_CONFIG },
-    toolsLevel: "core",
-    cache: { ...DEFAULT_CACHE_CONFIG },
-    gemini: { ...DEFAULT_GEMINI_CONFIG },
-    output: { ...DEFAULT_OUTPUT_CONFIG },
-    storage: { ...DEFAULT_STORAGE_CONFIG },
-    configSource: "md",
   };
 }
 
@@ -608,53 +512,48 @@ function defaultConfig(dir: string): RlmxConfig {
 // ─── Main loader ─────────────────────────────────────────
 
 /**
- * Load rlmx config with lookup chain:
- *   1. rlmx.yaml
- *   2. .rlmx.yaml
- *   3. Individual .md files (SYSTEM.md, TOOLS.md, etc.)
- *   4. Defaults
+ * Load rlmx config from .rlmx/ directory:
+ *   1. .rlmx/rlmx.yaml (required for yaml source)
+ *   2. .rlmx/SYSTEM.md (auto-loaded when present)
+ *   3. .rlmx/CRITERIA.md (auto-loaded when present)
+ *   4. .rlmx/TOOLS.md (auto-loaded and parsed when present)
+ *   5. Defaults if no .rlmx/rlmx.yaml
  */
 export async function loadConfig(dir: string): Promise<RlmxConfig> {
-  // 1. Try rlmx.yaml
-  const yamlContent = await readOptionalFile(join(dir, "rlmx.yaml"));
+  const rlmxDir = join(dir, ".rlmx");
+
+  // Try .rlmx/rlmx.yaml
+  const yamlContent = await readOptionalFile(join(rlmxDir, "rlmx.yaml"));
   if (yamlContent !== null) {
-    return parseYamlConfig(yamlContent, dir);
+    const partial = parseYamlConfig(yamlContent, dir);
+
+    // Auto-load .md files from .rlmx/
+    const [systemRaw, criteriaRaw, toolsRaw] = await Promise.all([
+      readOptionalFile(join(rlmxDir, "SYSTEM.md")),
+      readOptionalFile(join(rlmxDir, "CRITERIA.md")),
+      readOptionalFile(join(rlmxDir, "TOOLS.md")),
+    ]);
+
+    const system = systemRaw?.trim() || null;
+    const criteria = criteriaRaw?.trim() || null;
+    const tools = toolsRaw ? parseToolsMd(toolsRaw) : [];
+
+    return {
+      ...partial,
+      system,
+      criteria,
+      tools,
+    };
   }
 
-  // 2. Try .rlmx.yaml (hidden file)
-  const dotYamlContent = await readOptionalFile(join(dir, ".rlmx.yaml"));
-  if (dotYamlContent !== null) {
-    return parseYamlConfig(dotYamlContent, dir);
-  }
-
-  // 3. Try individual .md files
-  const hasMdFiles = await hasMdConfigFiles(dir);
-  if (hasMdFiles) {
-    return loadConfigFromMd(dir);
-  }
-
-  // 4. Defaults
+  // No .rlmx/rlmx.yaml — return defaults
   return defaultConfig(dir);
 }
 
 /**
- * Check if any .md config files exist in the directory.
- */
-async function hasMdConfigFiles(dir: string): Promise<boolean> {
-  for (const name of MD_CONFIG_FILES) {
-    const content = await readOptionalFile(join(dir, name));
-    if (content !== null) return true;
-  }
-  return false;
-}
-
-/**
- * Check if any config (yaml or .md) exists in a directory.
+ * Check if any config exists in a directory.
+ * Only checks .rlmx/rlmx.yaml.
  */
 export async function hasConfig(dir: string): Promise<boolean> {
-  // Check YAML files
-  if (await readOptionalFile(join(dir, "rlmx.yaml")) !== null) return true;
-  if (await readOptionalFile(join(dir, ".rlmx.yaml")) !== null) return true;
-  // Check .md files
-  return hasMdConfigFiles(dir);
+  return (await readOptionalFile(join(dir, ".rlmx", "rlmx.yaml"))) !== null;
 }
