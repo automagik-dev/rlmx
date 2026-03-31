@@ -60,7 +60,12 @@ export interface LLMRequest {
     | "rlm_query_batched"
     | "web_search"
     | "fetch_url"
-    | "generate_image";
+    | "generate_image"
+    | "pg_search"
+    | "pg_slice"
+    | "pg_time"
+    | "pg_count"
+    | "pg_query";
   prompts: string[];
   model?: string;
 }

@@ -30,6 +30,7 @@ const __dirname = dirname(__filename);
 const REPL_SERVER_PATH = join(__dirname, "..", "..", "python", "repl_server.py");
 const BATTERIES_PATH = join(__dirname, "..", "..", "python", "batteries.py");
 const GEMINI_BATTERIES_PATH = join(__dirname, "..", "..", "python", "gemini_batteries.py");
+const PG_BATTERIES_PATH = join(__dirname, "..", "..", "python", "pg_batteries.py");
 
 /** Battery function names — tracked for stats. */
 const BATTERY_FUNCTION_NAMES = [
@@ -60,6 +61,8 @@ export interface REPLStartOptions {
   toolsLevel?: ToolsLevel;
   /** Whether to load Gemini batteries (web_search, fetch_url, generate_image). */
   loadGeminiBatteries?: boolean;
+  /** Whether to load pg_batteries (pg_search, pg_slice, etc.) for storage mode. */
+  loadPgBatteries?: boolean;
   /** Python executable path (default: "python3"). */
   pythonPath?: string;
   /** Path to repl_server.py (auto-detected). */
@@ -167,6 +170,11 @@ export class REPL {
         await this._loadGeminiBatteries();
       }
     }
+
+    // Load pg_batteries when storage mode is active (independent of tools level)
+    if (options.loadPgBatteries) {
+      await this._loadPgBatteries();
+    }
   }
 
   /** Execute Python code in the REPL and return the result. */
@@ -267,6 +275,13 @@ export class REPL {
 
   private async _loadGeminiBatteries(): Promise<void> {
     const code = await readFile(GEMINI_BATTERIES_PATH, "utf-8");
+    this._skipTracking = true;
+    await this.execute(code);
+    this._skipTracking = false;
+  }
+
+  private async _loadPgBatteries(): Promise<void> {
+    const code = await readFile(PG_BATTERIES_PATH, "utf-8");
     this._skipTracking = true;
     await this.execute(code);
     this._skipTracking = false;
