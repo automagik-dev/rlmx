@@ -23,6 +23,7 @@ Usage:
   rlmx cache [options]           Pre-warm cache or estimate context size
   rlmx batch <file> [options]    Bulk interrogation from questions file
   rlmx benchmark <mode> [options]  Run benchmarks (cost or oolong)
+  rlmx stats [options]           Query run history and cost breakdowns
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -74,7 +75,7 @@ Examples:
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark" | "stats";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -152,6 +153,7 @@ function parseCliArgs(args: string[]): CliOptions {
     : positionals[0] === "batch" ? "batch"
     : positionals[0] === "config" ? "config"
     : positionals[0] === "benchmark" ? "benchmark"
+    : positionals[0] === "stats" ? "stats"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const batchFile = command === "batch" ? positionals[1] ?? null : null;
@@ -766,6 +768,12 @@ async function main(): Promise<void> {
     case "benchmark":
       await runBenchmarkCommand(opts, process.argv.slice(3));
       break;
+
+    case "stats": {
+      const { runStatsCommand } = await import("./stats.js");
+      await runStatsCommand(process.argv.slice(3));
+      break;
+    }
 
     case "query":
       if (!opts.query && process.stdin.isTTY) {
