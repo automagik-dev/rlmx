@@ -325,6 +325,13 @@ async function runQuery(opts: CliOptions): Promise<void> {
       }
     }
   }
+  // Force storage mode when explicitly set to 'always'
+  if (config.storage.enabled === "always" && !storageMode) {
+    storageMode = true;
+    if (opts.verbose) {
+      console.error("rlmx: storage mode forced (storage.enabled: always)");
+    }
+  }
 
   // Read query from stdin if not provided as argument
   let query = opts.query;
@@ -555,17 +562,28 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
     }
   }
 
-  // Validate context size and auto-adjust cache mode for batch
+  // Validate context size and auto-adjust cache/storage mode for batch
   let batchCache = true;
+  let batchStorageMode = false;
   if (context) {
     const validation = validateContextSize(context, config.model.provider);
     if (!validation.valid) {
       console.error(
-        `rlmx: context exceeds model limit (~${validation.estimatedTokens.toLocaleString()} tokens > ${validation.limit.toLocaleString()}), disabling cache mode (using REPL externalization)`
+        `rlmx: context exceeds model limit (~${validation.estimatedTokens.toLocaleString()} tokens > ${validation.limit.toLocaleString()}), disabling cache mode`
       );
       batchCache = false;
       config.cache.enabled = false;
+      if (config.storage.enabled === "auto" || config.storage.enabled === "always") {
+        batchStorageMode = true;
+        console.error(
+          `rlmx: storage mode activated for batch (~${validation.estimatedTokens.toLocaleString()} tokens)`
+        );
+      }
     }
+  }
+  // Force storage mode when explicitly set to 'always'
+  if (config.storage.enabled === "always" && !batchStorageMode) {
+    batchStorageMode = true;
   }
 
   if (opts.verbose) {
@@ -577,6 +595,7 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
     timeout: opts.timeout,
     verbose: opts.verbose,
     cache: batchCache,
+    storageMode: batchStorageMode,
     maxCost: opts.maxCost ?? undefined,
     parallel: opts.parallel,
   });
