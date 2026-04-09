@@ -13,7 +13,41 @@ import { createLogger } from "./logger.js";
 import { checkPythonVersion } from "./detect.js";
 import { estimateTokens, validateContextSize } from "./cache.js";
 import { runBatch } from "./batch.js";
-import { loadSettings, saveSettings, injectApiKeysToEnv, formatValue, parseSettingValue, getSettingsPath } from "./settings.js";
+import { loadSettings, saveSettings, injectApiKeysToEnv, formatValue, parseSettingValue, getSettingsPath, type GlobalSettings } from "./settings.js";
+import type { RlmxConfig } from "./config.js";
+
+/**
+ * Apply model overrides from global settings (~/.rlmx/settings.json).
+ * Priority: CLI flags > settings.json > rlmx.yaml > hardcoded defaults.
+ *
+ * This ensures `rlmx config set model.provider openai` actually takes effect
+ * even when a local rlmx.yaml exists with its own model defaults.
+ */
+/** Module-level ref so helper functions can apply overrides without re-loading. */
+let _globalSettings: GlobalSettings = {};
+
+/**
+ * Apply model overrides from global settings (~/.rlmx/settings.json).
+ * Priority: CLI flags > settings.json > rlmx.yaml > hardcoded defaults.
+ *
+ * This ensures `rlmx config set model.provider openai` actually takes effect
+ * even when a local rlmx.yaml exists with its own model defaults.
+ */
+function applySettingsModelOverrides(config: RlmxConfig, settings?: GlobalSettings): void {
+  const s = settings ?? _globalSettings;
+  const provider = s["model.provider"];
+  const model = s["model.model"];
+  const subCallModel = s["model.sub-call-model"];
+  if (typeof provider === "string" && provider) {
+    config.model.provider = provider;
+  }
+  if (typeof model === "string" && model) {
+    config.model.model = model;
+  }
+  if (typeof subCallModel === "string" && subCallModel) {
+    config.model.subCallModel = subCallModel;
+  }
+}
 
 const HELP = `rlmx — RLM algorithm CLI for coding agents
 
@@ -264,6 +298,7 @@ async function runQuery(opts: CliOptions): Promise<void> {
 
   // Load config
   const config = await loadConfig(configDir);
+  applySettingsModelOverrides(config);
 
   // Apply CLI overrides to config
   if (opts.thinking) {
@@ -460,6 +495,7 @@ async function runCache(opts: CliOptions): Promise<void> {
   // Load config
   const configDir = process.cwd();
   const config = await loadConfig(configDir);
+  applySettingsModelOverrides(config);
 
   // Apply CLI overrides
   if (opts.tools) {
@@ -544,6 +580,7 @@ async function runBatchCommand(opts: CliOptions): Promise<void> {
 
   // Load config
   const config = await loadConfig(configDir);
+  applySettingsModelOverrides(config);
 
   // Apply CLI overrides to config
   config.cache.enabled = true; // batch always uses cache
@@ -708,6 +745,7 @@ async function runBenchmarkCommand(opts: CliOptions, args: string[]): Promise<vo
   const mode = args[0];
   const configDir = process.cwd();
   const config = await loadConfig(configDir);
+  applySettingsModelOverrides(config);
 
   if (opts.tools) config.toolsLevel = opts.tools;
 
@@ -744,6 +782,7 @@ async function main(): Promise<void> {
 
   // Load global settings and inject API keys before any command
   const globalSettings = await loadSettings();
+  _globalSettings = globalSettings;
   injectApiKeysToEnv(globalSettings);
 
   switch (opts.command) {
