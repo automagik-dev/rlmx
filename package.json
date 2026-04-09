@@ -27,7 +27,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "0.64.0",
+    "@mariozechner/pi-ai": "0.66.1",
     "js-yaml": "^4.1.1",
     "pg": "^8.20.0",
     "pgserve": "^1.1.6"
