@@ -76,6 +76,16 @@ export interface StorageConfig {
   charsPerToken: number;
 }
 
+/** RTK (Rust Token Killer) integration config */
+export interface RtkConfig {
+  /**
+   * auto   — use RTK when `which rtk` succeeds; fall through otherwise.
+   * always — require RTK; throw at REPL startup if absent.
+   * never  — disable the run_cli auto-prefix entirely.
+   */
+  enabled: "auto" | "always" | "never";
+}
+
 /** Tool level — controls which functions are available in the REPL */
 export type ToolsLevel = "core" | "standard" | "full";
 
@@ -101,6 +111,8 @@ export interface RlmxConfig {
   output: OutputConfig;
   /** Storage configuration for pgserve */
   storage: StorageConfig;
+  /** RTK (Rust Token Killer) integration */
+  rtk: RtkConfig;
   /** Config source: "yaml" | "defaults" */
   configSource: "yaml" | "defaults";
 }
@@ -152,6 +164,10 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   chunkSize: null,
   chunkUtilization: 0.6,
   charsPerToken: 4,
+};
+
+export const DEFAULT_RTK_CONFIG: RtkConfig = {
+  enabled: "auto",
 };
 
 // ─── YAML Schema ─────────────────────────────────────────
@@ -207,6 +223,9 @@ interface RawYamlConfig {
     "chunk-size"?: number | null;
     "chunk-utilization"?: number;
     "chars-per-token"?: number;
+  };
+  rtk?: {
+    enabled?: string;
   };
 }
 
@@ -474,6 +493,17 @@ function parseYamlConfig(content: string, dir: string): Omit<RlmxConfig, "system
     charsPerToken,
   };
 
+  // Parse rtk config
+  const rawRtkEnabled = cfg.rtk?.enabled ?? DEFAULT_RTK_CONFIG.enabled;
+  if (!["auto", "always", "never"].includes(rawRtkEnabled)) {
+    throw new Error(
+      `Invalid rtk.enabled "${rawRtkEnabled}" in rlmx.yaml. Must be one of: auto, always, never.`
+    );
+  }
+  const rtk: RtkConfig = {
+    enabled: rawRtkEnabled as RtkConfig["enabled"],
+  };
+
   return {
     model,
     configDir: dir,
@@ -484,6 +514,7 @@ function parseYamlConfig(content: string, dir: string): Omit<RlmxConfig, "system
     gemini,
     output,
     storage,
+    rtk,
     configSource: "yaml",
   };
 }
@@ -505,6 +536,7 @@ function defaultConfig(dir: string): RlmxConfig {
     gemini: { ...DEFAULT_GEMINI_CONFIG },
     output: { ...DEFAULT_OUTPUT_CONFIG },
     storage: { ...DEFAULT_STORAGE_CONFIG },
+    rtk: { ...DEFAULT_RTK_CONFIG },
     configSource: "defaults",
   };
 }

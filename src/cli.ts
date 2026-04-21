@@ -11,6 +11,7 @@ import { rlmLoop } from "./rlm.js";
 import { outputResult, buildStats, emitStats } from "./output.js";
 import { createLogger } from "./logger.js";
 import { checkPythonVersion } from "./detect.js";
+import { detectRtk } from "./rtk-detect.js";
 import { estimateTokens, validateContextSize } from "./cache.js";
 import { runBatch } from "./batch.js";
 import { loadSettings, saveSettings, injectApiKeysToEnv, formatValue, parseSettingValue, getSettingsPath, type GlobalSettings } from "./settings.js";
@@ -58,6 +59,7 @@ Usage:
   rlmx batch <file> [options]    Bulk interrogation from questions file
   rlmx benchmark <mode> [options]  Run benchmarks (cost or oolong)
   rlmx stats [options]           Query run history and cost breakdowns
+  rlmx doctor                    Health check: providers, RTK, config
 
 Options:
   --context <path>        Path to context (directory or file)
@@ -112,7 +114,7 @@ Examples:
 
 interface CliOptions {
   query: string | null;
-  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark" | "stats";
+  command: "query" | "init" | "help" | "version" | "cache" | "batch" | "config" | "benchmark" | "stats" | "doctor";
   context: string | null;
   output: "text" | "json" | "stream";
   verbose: boolean;
@@ -193,6 +195,7 @@ function parseCliArgs(args: string[]): CliOptions {
     : positionals[0] === "config" ? "config"
     : positionals[0] === "benchmark" ? "benchmark"
     : positionals[0] === "stats" ? "stats"
+    : positionals[0] === "doctor" ? "doctor"
     : "query";
   const query = command === "query" ? positionals[0] ?? null : null;
   const batchFile = command === "batch" ? positionals[1] ?? null : null;
@@ -777,6 +780,113 @@ async function runBenchmarkCommand(opts: CliOptions, args: string[]): Promise<vo
   }
 }
 
+/**
+ * rlmx doctor — report health of providers, RTK, and config.
+ *
+ * Exit codes:
+ *   0 = all nominal
+ *   1 = at least one provider API key is missing (warning)
+ *   2 = rtk.enabled=always but rtk is not installed (error)
+ */
+async function runDoctor(): Promise<void> {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  // dist/src/cli.js → ../../package.json
+  const pkg = require("../../package.json") as { version: string };
+
+  // Load config from cwd (falls back to defaults if no .rlmx/rlmx.yaml)
+  const configDir = process.cwd();
+  const config = await loadConfig(configDir);
+  applySettingsModelOverrides(config);
+
+  // Detect RTK (cached for process lifetime)
+  const rtk = await detectRtk();
+
+  // Settings file presence
+  const settingsPath = getSettingsPath();
+  const { access } = await import("node:fs/promises");
+  let settingsExists = false;
+  try {
+    await access(settingsPath);
+    settingsExists = true;
+  } catch {
+    // missing
+  }
+
+  // Active template — inferred from whether .rlmx exists; we report the default
+  // the user selects at init (wish scope: print template only when determinable).
+  // With no easy on-disk marker, we just show "default" as the library default.
+  const activeTemplate = config.configSource === "yaml" ? "(from rlmx.yaml)" : "default";
+
+  // Provider key status — mirrors settings.ENV_KEY_MAP
+  const providerKeys: { label: string; envVar: string }[] = [
+    { label: "google   ", envVar: "GEMINI_API_KEY" },
+    { label: "openai   ", envVar: "OPENAI_API_KEY" },
+    { label: "anthropic", envVar: "ANTHROPIC_API_KEY" },
+    { label: "groq     ", envVar: "GROQ_API_KEY" },
+    { label: "xai      ", envVar: "XAI_API_KEY" },
+    { label: "openrouter", envVar: "OPENROUTER_API_KEY" },
+  ];
+
+  let anyKeyMissing = false;
+  for (const { envVar } of providerKeys) {
+    if (!process.env[envVar]) anyKeyMissing = true;
+  }
+
+  // RTK mode text
+  const rtkMode = config.rtk.enabled;
+  let rtkModeText: string;
+  if (rtkMode === "always") {
+    rtkModeText = rtk.available ? "always (enabled)" : "always (MISSING — error)";
+  } else if (rtkMode === "never") {
+    rtkModeText = "never (disabled)";
+  } else {
+    rtkModeText = rtk.available ? "auto (enabled)" : "auto (disabled)";
+  }
+
+  // ─── Output ────────────────────────────────────────────
+  console.log(`rlmx ${pkg.version}`);
+  console.log(`node: ${process.version}`);
+  console.log("");
+
+  console.log("LLM providers:");
+  for (const { label, envVar } of providerKeys) {
+    const set = Boolean(process.env[envVar]);
+    console.log(`  ${label} : ${envVar} set (${set ? "yes" : "no"})`);
+  }
+  console.log("");
+
+  console.log("RTK (token optimizer):");
+  console.log(`  installed : ${rtk.available ? "yes" : "no"}`);
+  if (rtk.available) {
+    console.log(`  version   : ${rtk.version ?? "(unknown)"}`);
+    if (rtk.path) console.log(`  path      : ${rtk.path}`);
+  }
+  console.log(`  mode      : ${rtkModeText}`);
+  console.log("");
+
+  console.log("Config:");
+  console.log(`  ${settingsPath} (${settingsExists ? "exists" : "missing"})`);
+  console.log(`  Active template: ${activeTemplate}`);
+
+  // ─── Exit code ────────────────────────────────────────
+  // Exit 2 — rtk.enabled=always but rtk is absent (error, overrides warning)
+  if (rtkMode === "always" && !rtk.available) {
+    console.error("");
+    console.error(
+      "Error: rlmx config: rtk.enabled=always but rtk is not installed on PATH."
+    );
+    process.exit(2);
+  }
+
+  // Exit 1 — at least one provider API key missing (warning)
+  if (anyKeyMissing) {
+    process.exit(1);
+  }
+
+  // Exit 0 — nominal
+}
+
 async function main(): Promise<void> {
   const opts = parseCliArgs(process.argv.slice(2));
 
@@ -824,6 +934,10 @@ async function main(): Promise<void> {
       await runStatsCommand(process.argv.slice(3));
       break;
     }
+
+    case "doctor":
+      await runDoctor();
+      break;
 
     case "query":
       if (!opts.query && process.stdin.isTTY) {

@@ -30,7 +30,7 @@
     "@mariozechner/pi-ai": "0.66.1",
     "js-yaml": "^4.1.1",
     "pg": "^8.20.0",
-    "pgserve": "^1.1.6"
+    "pgserve": "^1.1.10"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.0.0",

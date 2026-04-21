@@ -29,6 +29,55 @@ rlmx "Summarize this paper" --context paper.md --output json
 cat data.csv | rlmx "Analyze this dataset"
 ```
 
+## RTK Integration (token savings)
+
+rlmx auto-detects [RTK](https://github.com/rtk-ai/rtk) and routes CLI subprocess calls through it when available, for 60-90% token savings on tool outputs.
+
+### Install RTK (optional)
+
+```bash
+brew install rtk                                                                             # macOS
+curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh    # Linux/macOS
+cargo install --git https://github.com/rtk-ai/rtk                                            # Rust
+```
+
+### How it works
+
+- In your `TOOLS.md`, use `run_cli(cmd, *args)` instead of raw `subprocess.run(...)`
+- When RTK is installed, `run_cli` transparently prefixes with `rtk` → filtered output
+- When RTK is absent, `run_cli` passes through unchanged — no behavior break
+
+### Configuration
+
+```yaml
+# rlmx.yaml
+rtk:
+  enabled: auto   # auto | always | never (default: auto)
+```
+
+- `auto` — use RTK when detected on PATH, otherwise pass through (fail-open)
+- `always` — require RTK; `rlmx doctor` exits non-zero if missing
+- `never` — disable prefix even when RTK is installed
+
+### Verify
+
+```bash
+rlmx doctor         # shows RTK status (installed version + mode)
+rtk gain            # shows token savings from rlmx + other RTK integrations
+```
+
+### Before / after
+
+```python
+# Before — raw subprocess, full git output consumes tokens
+import subprocess
+out = subprocess.run(["git", "log", "-n", "10"], capture_output=True, text=True).stdout
+
+# After — run_cli auto-routes through rtk when available
+r = run_cli("git", "log", "-n", "10")
+out = r["stdout"]   # filtered + compact; ~60-90% fewer tokens
+```
+
 ## How It Works
 
 rlmx implements the RLM (REPL-LM) algorithm:
