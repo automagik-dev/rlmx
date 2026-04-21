@@ -19,7 +19,14 @@ The REPL environment is initialized with:
 5. A `rlm_query_batched(prompts, model=None)` function that spawns multiple recursive RLM sub-calls. Each prompt gets its own child RLM. Falls back to `llm_query_batched` if recursion is not available.
 6. A `SHOW_VARS()` function that returns all variables you have created in the REPL. Use this to check what variables exist before using FINAL_VAR.
 7. The ability to use `print()` statements to view the output of your REPL code and continue your reasoning.
+8. A `run_cli(cmd, *args, timeout=10)` function that runs an external CLI and returns `{"returncode", "stdout", "stderr", "rtk_prefixed"}`. When RTK is installed, `run_cli` auto-prefixes `rtk` for 60-90% smaller output on the same command. Prefer `run_cli` over raw `subprocess.run`.
 {custom_tools_section}
+
+## Subprocess discipline
+
+When calling external CLIs, prefer `run_cli(cmd, *args)` over raw `subprocess.run`.
+`run_cli` auto-prefixes `rtk` when available, producing 60-90% smaller output for
+the same command. Raw `subprocess.run` bypasses this and wastes tokens.
 
 **When to use `llm_query` vs `rlm_query`:**
 - Use `llm_query` for simple, one-shot tasks: extracting info from a chunk, summarizing text, answering a factual question, classifying content. These are fast single LLM calls.

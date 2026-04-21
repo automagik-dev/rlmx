@@ -69,6 +69,8 @@ export interface REPLStartOptions {
   serverPath?: string;
   /** Optional logger for crash events and diagnostics. */
   logger?: Logger;
+  /** When true, set _RLMX_RTK_MODE=on so the run_cli battery auto-prefixes rtk. */
+  rtkEnabled?: boolean;
 }
 
 /** Callback for handling LLM requests from the Python REPL. */
@@ -112,7 +114,11 @@ export class REPL {
 
     this.process = spawn(pythonPath, [serverPath], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: "1",
+        _RLMX_RTK_MODE: options.rtkEnabled ? "on" : "off",
+      },
     });
 
     this.readline = createInterface({ input: this.process.stdout! });
