@@ -260,3 +260,58 @@ def reduce_query(results, prompt):
 
     full_prompt = prompt.replace("{results}", combined)
     return llm_query(full_prompt)  # noqa: F821 — REPL namespace
+
+
+def run_cli(cmd, *args, timeout=10, check=False, input=None):
+    """Run a CLI command, auto-prefixing `rtk` when available + enabled.
+
+    When RTK (Rust Token Killer) is installed and `rtk.enabled` in rlmx.yaml
+    resolves to "on" for this session, the command is silently wrapped as
+    `rtk <cmd> <args...>` to gain 60-90% token compression on captured output.
+    Otherwise the command runs directly.
+
+    Returns a dict: {returncode, stdout, stderr, rtk_prefixed}.
+
+    A timeout or OS-level failure never raises out of the REPL — it maps to
+    returncode=-1 with the error text in stderr.
+    """
+    import os
+    import subprocess
+
+    mode = os.environ.get("_RLMX_RTK_MODE", "off")
+    prefixed = mode == "on" and cmd != "rtk"
+    full_cmd = ["rtk", cmd, *args] if prefixed else [cmd, *args]
+
+    try:
+        r = subprocess.run(
+            full_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            input=input,
+        )
+        result = {
+            "returncode": r.returncode,
+            "stdout": r.stdout,
+            "stderr": r.stderr,
+            "rtk_prefixed": prefixed,
+        }
+        if check and r.returncode != 0:
+            raise subprocess.CalledProcessError(
+                r.returncode, full_cmd, r.stdout, r.stderr
+            )
+        return result
+    except subprocess.TimeoutExpired as e:
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"timeout: {e}",
+            "rtk_prefixed": prefixed,
+        }
+    except FileNotFoundError as e:
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"command not found: {e}",
+            "rtk_prefixed": prefixed,
+        }

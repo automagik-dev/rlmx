@@ -111,6 +111,37 @@ tools-level: standard
     await assert.rejects(() => loadConfig(dir), /Invalid tools-level/);
     await rm(dir, { recursive: true });
   });
+
+  it("defaults rtk.enabled to auto when rlmx.yaml omits it", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-cfg-"));
+    await makeConfig(dir, "model:\n  provider: anthropic\n");
+    const cfg = await loadConfig(dir);
+    assert.equal(cfg.rtk.enabled, "auto");
+    await rm(dir, { recursive: true });
+  });
+
+  it("accepts rtk.enabled: never", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-cfg-"));
+    await makeConfig(dir, "rtk:\n  enabled: never\n");
+    const cfg = await loadConfig(dir);
+    assert.equal(cfg.rtk.enabled, "never");
+    await rm(dir, { recursive: true });
+  });
+
+  it("rejects invalid rtk.enabled", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-cfg-"));
+    await makeConfig(dir, "rtk:\n  enabled: banana\n");
+    await assert.rejects(() => loadConfig(dir), /Invalid rtk\.enabled/);
+    await rm(dir, { recursive: true });
+  });
+
+  it("default config (no yaml) sets rtk.enabled to auto", async () => {
+    dir = await mkdtemp(join(tmpdir(), "rlmx-cfg-"));
+    const cfg = await loadConfig(dir);
+    assert.equal(cfg.rtk.enabled, "auto");
+    assert.equal(cfg.configSource, "defaults");
+    await rm(dir, { recursive: true });
+  });
 });
 
 describe("parseToolsMd", () => {

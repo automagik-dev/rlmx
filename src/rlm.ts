@@ -36,6 +36,7 @@ import {
 import { emitStreamEvent, logVerbose, type RLMResult } from "./output.js";
 import { BudgetTracker } from "./budget.js";
 import { isGoogleProvider } from "./gemini.js";
+import { detectRtk } from "./rtk-detect.js";
 import type { Logger } from "./logger.js";
 
 /** Options for the RLM loop. */
@@ -271,12 +272,31 @@ export async function rlmLoop(
       toolsMap[tool.name] = tool.code;
     }
 
+    // Resolve RTK mode once per run. `always` without an install is a config error.
+    const rtk = await detectRtk();
+    if (config.rtk.enabled === "always" && !rtk.available) {
+      throw new Error(
+        "rlmx config: rtk.enabled=always but rtk is not installed on PATH."
+      );
+    }
+    const rtkEnabled =
+      config.rtk.enabled === "always" ||
+      (config.rtk.enabled === "auto" && rtk.available);
+
+    if (rtkEnabled && opts.verbose) {
+      const v = rtk.version ?? "unknown";
+      process.stderr.write(
+        `[rtk:auto] RTK ${v} detected — CLI subprocesses via run_cli() will auto-prefix rtk.\n`
+      );
+    }
+
     await repl.start({
       context: replContext as string | string[] | Record<string, unknown>,
       tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
       loadGeminiBatteries: isGoogleProvider(config.model.provider) && (config.toolsLevel === "standard" || config.toolsLevel === "full"),
       loadPgBatteries: !!opts.storageMode,
       toolsLevel: config.toolsLevel,
+      rtkEnabled,
     });
 
     // Set up LLM request handler for REPL IPC — pass storage for pg_* routes

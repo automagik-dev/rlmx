@@ -1,6 +1,6 @@
 {
   "name": "@automagik/rlmx",
-  "version": "0.260409.3",
+  "version": "0.260409.4",
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "publishConfig": {
@@ -30,7 +30,7 @@
     "@mariozechner/pi-ai": "0.66.1",
     "js-yaml": "^4.1.1",
     "pg": "^8.20.0",
-    "pgserve": "^1.1.8"
+    "pgserve": "^1.1.10"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.0.0",
