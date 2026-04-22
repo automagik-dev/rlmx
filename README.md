@@ -29,6 +29,44 @@ rlmx "Summarize this paper" --context paper.md --output json
 cat data.csv | rlmx "Analyze this dataset"
 ```
 
+## SDK (`rlmx.sdk.*`)
+
+rlmx also ships a programmatic SDK for consumers that need to drive
+agents from code — with per-iteration observability, permission
+hooks, validate-with-retry, session checkpointing, and a pluggable
+tool registry. The CLI path above is untouched; the SDK is purely
+additive.
+
+```ts
+import { sdk } from "@automagik/rlmx";
+
+const spec = await sdk.loadAgentSpec("./my-agent");
+const registry = sdk.createToolRegistry();
+await sdk.registerRtkTool(registry);
+await sdk.loadPluginTools(spec, registry);
+
+for await (const ev of sdk.runAgent({
+	agentId: "my-agent",
+	sessionId: "s-1",
+	input: "what's new?",
+	driver: sdk.rlmDriver({
+		model: { provider: "google", model: "gemini-2.5-flash" },
+		system: await Bun.file("./my-agent/SYSTEM.md").text(),
+	}),
+	toolRegistry: registry,
+})) {
+	console.log(ev.type, ev.timestamp);
+}
+```
+
+Deeper dives:
+
+- [`docs/sdk-overview.md`](docs/sdk-overview.md) — layered architecture + design principles.
+- [`docs/events.md`](docs/events.md) — the 12-event catalogue + emitter contract.
+- [`docs/tool-authoring.md`](docs/tool-authoring.md) — TS/MJS + Python plugin recipes, RTK integration.
+- [`docs/agent-yaml-schema.md`](docs/agent-yaml-schema.md) — `agent.yaml` field reference.
+- [`examples/`](examples/) — three runnable example agents (hello-world / research-agent / brain-triage) with smoke tests.
+
 ## RTK Integration (token savings)
 
 rlmx auto-detects [RTK](https://github.com/rtk-ai/rtk) and routes CLI subprocess calls through it when available, for 60-90% token savings on tool outputs.
