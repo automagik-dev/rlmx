@@ -22,7 +22,7 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "node --test dist/tests/*.test.js",
-    "prepare": "husky",
+    "prepare": "node scripts/prepare.mjs",
     "bump-version": "node scripts/version.mjs",
     "check": "tsc --noEmit"
   },
