@@ -82,3 +82,7 @@ export type {
 	IterationStep,
 	ToolResolver,
 } from "./agent.js";
+
+// ─── rlmDriver (G2c — real LLM bridge) ───────────────────────────
+export { formatRlmPrompt, rlmDriver } from "./rlm-driver.js";
+export type { RlmDriverConfig } from "./rlm-driver.js";
