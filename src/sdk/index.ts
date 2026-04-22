@@ -86,3 +86,35 @@ export type {
 // ─── rlmDriver (G2c — real LLM bridge) ───────────────────────────
 export { formatRlmPrompt, rlmDriver } from "./rlm-driver.js";
 export type { RlmDriverConfig } from "./rlm-driver.js";
+
+// ─── Agent spec + tool plugin loader (G3a) ───────────────────────
+export {
+	loadAgentSpec,
+	parseAgentSpec,
+	resolveAgentPath,
+} from "./agent-spec.js";
+export type { AgentBudget, AgentScope, AgentSpec } from "./agent-spec.js";
+export {
+	createToolRegistry,
+	toolRegistryAsResolver,
+	UnknownToolError,
+} from "./tool-registry.js";
+export type { ToolContext, ToolHandler, ToolRegistry } from "./tool-registry.js";
+export {
+	InvalidPluginError,
+	MissingPluginError,
+	loadPluginTools,
+} from "./tool-loader.js";
+export type { LoadOptions, LoadResult } from "./tool-loader.js";
+
+// ─── RTK plugin (G3a) ────────────────────────────────────────────
+export { registerRtkTool } from "./rtk-plugin.js";
+export type {
+	RegisterRtkOptions,
+	RtkToolArgs,
+	RtkToolResult,
+} from "./rtk-plugin.js";
+
+// ─── Metrics (G3a) ───────────────────────────────────────────────
+export { createMetricsRecorder } from "./metrics.js";
+export type { IterationMetrics, MetricsRecorder } from "./metrics.js";
