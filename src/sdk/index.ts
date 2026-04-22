@@ -115,6 +115,21 @@ export type {
 	RtkToolResult,
 } from "./rtk-plugin.js";
 
+// ─── Python plugin loader (G3b) ──────────────────────────────────
+export {
+	DEFAULT_PYTHON_BIN,
+	DEFAULT_TIMEOUT_MS as PYTHON_DEFAULT_TIMEOUT_MS,
+	loadPythonPlugins,
+	makePythonPluginHandler,
+	PythonPluginError,
+	PythonPluginTimeoutError,
+} from "./python-plugin.js";
+export type {
+	PythonLoadResult,
+	PythonPluginExecResult,
+	PythonPluginOptions,
+} from "./python-plugin.js";
+
 // ─── Metrics (G3a) ───────────────────────────────────────────────
 export { createMetricsRecorder } from "./metrics.js";
 export type { IterationMetrics, MetricsRecorder } from "./metrics.js";

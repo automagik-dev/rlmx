@@ -201,8 +201,42 @@ export default async function greet(args, ctx) {
 }
 ```
 
-Extension priority: `.mjs` → `.js`. TypeScript source loading lands in G3b
-when the Python plugin path also lands (shared concern: runtime loader).
+Extension priority: `.mjs` → `.js` → `.py` (the last via `loadPythonPlugins`).
+TypeScript source loading is still deferred — needs a runtime TS loader
+(tsx or node --experimental-strip-types) and can land alongside G4 docs.
+
+### Python plugins (Group 3b)
+
+```python
+#!/usr/bin/env python3
+import json, sys
+args = json.load(sys.stdin)
+# ... tool logic ...
+json.dump({"ok": True, "value": args["x"] * 2}, sys.stdout)
+```
+
+```ts
+// Compose both loaders — JS/MJS first, Python for the remainder.
+const js = await sdk.loadPluginTools(spec, registry);
+const py = await sdk.loadPythonPlugins(spec, registry, {
+	timeoutMs: 30_000,
+	env: { PATH: process.env.PATH!, BRAIN_HOME: agentHome },
+});
+```
+
+Each Python call spawns a fresh subprocess (no REPL pooling), passes
+the `args` JSON on stdin, expects a JSON document on stdout, and captures
+stderr as diagnostic. Errors map to typed exceptions:
+
+| condition | error |
+|---|---|
+| wall-clock overrun | `PythonPluginTimeoutError` |
+| non-zero exit | `PythonPluginError` (exposes `exitCode`, `stderr`, `stdout`) |
+| malformed stdout JSON | `PythonPluginError` with message "stdout was not valid JSON" |
+| interpreter not found | `PythonPluginError` with "spawn failed: ..." |
+
+Out of scope today: heavy sandboxing (seccomp / namespaces), virtualenv
+management, streaming partial results, cross-language tool composition.
 
 ## Per-depth metrics (Group 3a)
 
@@ -239,6 +273,5 @@ RTK / metrics (G3a). They do **not**:
 - switch the CLI to use `runAgent()` — `rlmx "query"` still drives
   `rlmLoop` as before;
 - load `.ts`-source plugins — only pre-compiled `.mjs` / `.js`
-  (the shared-runtime concern with Python loading lands in G3b);
-- load Python plugins (G3b);
+  (TypeScript source still needs a runtime TS loader);
 - ship a pgserve-backed `SessionStore` implementation.
