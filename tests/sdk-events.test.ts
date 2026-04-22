@@ -32,14 +32,18 @@ describe("SDK events — contract (Wish B Groups 1 + 2)", () => {
 		assert.equal(WISH_SPEC_EVENT_TYPES.length, 10);
 	});
 
-	it("ALL_AGENT_EVENT_TYPES extends the wish spec with session lifecycle (Group 2)", () => {
-		const extras: readonly AgentEventType[] = ["SessionOpen", "SessionClose"];
+	it("ALL_AGENT_EVENT_TYPES extends the wish spec with session + observation events", () => {
+		const extras: readonly AgentEventType[] = [
+			"SessionOpen",
+			"SessionClose",
+			"ToolCallObservation",
+		];
 		assert.deepEqual(
 			[...ALL_AGENT_EVENT_TYPES],
 			[...WISH_SPEC_EVENT_TYPES, ...extras],
-			"ALL_AGENT_EVENT_TYPES = wish-spec 10 + SessionOpen/SessionClose from G2",
+			"ALL_AGENT_EVENT_TYPES = wish-spec 10 + Session{Open,Close} (G2) + ToolCallObservation (L2a)",
 		);
-		assert.equal(ALL_AGENT_EVENT_TYPES.length, 12);
+		assert.equal(ALL_AGENT_EVENT_TYPES.length, 13);
 	});
 
 	it("makeEvent fills timestamp + type automatically", () => {
@@ -127,9 +131,17 @@ describe("SDK events — contract (Wish B Groups 1 + 2)", () => {
 				sessionId: "s1",
 				reason: "complete",
 			} as never),
+			makeEvent<AgentEvent>("ToolCallObservation", {
+				sessionId: "s1",
+				iteration: 1,
+				tool: "external_tool",
+				args: { q: "?" },
+				status: "completed",
+				result: "ok",
+			} as never),
 		];
 
-		assert.equal(samples.length, 12);
+		assert.equal(samples.length, 13);
 		for (const ev of samples) {
 			const round = JSON.parse(JSON.stringify(ev));
 			assert.equal(round.type, ev.type);

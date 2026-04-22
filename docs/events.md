@@ -49,10 +49,12 @@ for await (const ev of em) {
 | `Error`           | For non-fatal + fatal failures, tagged by phase.      |
 | `SessionOpen`     | On `resumeAgent()` — `resumed` flags fresh vs reload. |
 | `SessionClose`    | On `pauseAgent()` / terminal event — carries reason.  |
+| `ToolCallObservation` | On `tool_call_observation` step — tool dispatch happened elsewhere (wrapped framework); SDK observes without re-dispatching. |
 
 The first 10 are the wish-spec contract (`WISH_SPEC_EVENT_TYPES`);
-the last 2 are session-lifecycle additions from Group 2. Use
-`ALL_AGENT_EVENT_TYPES` for the full current union and
+the next 2 are session-lifecycle additions from Group 2; the
+13th is `ToolCallObservation` for observe-vs-dispatch drivers (L2a).
+Use `ALL_AGENT_EVENT_TYPES` for the full current union and
 `WISH_SPEC_EVENT_TYPES` for just the wish-frozen core.
 
 Every event carries a `timestamp` (`ISO-8601` UTC) and a discriminant
@@ -160,6 +162,54 @@ for await (const ev of stream) {
 boundaries; the emitter closes with `SessionClose { reason: "abort" }`
 and the snapshot is checkpointed so `resumeAgent(sessionId, store)`
 picks up where abort hit.
+
+## Observe-vs-dispatch — `tool_call_observation` (L2a)
+
+Some consumers drive `runAgent()` while their tool dispatch happens
+INSIDE a wrapped framework (pi-agent, LangChain, auto-agent loops).
+Those drivers need to surface tool activity to the event stream for
+observability — but they do NOT want the SDK to re-dispatch a tool
+that the external framework has already handled.
+
+The `tool_call_observation` IterationStep handles that case:
+
+```ts
+const driver: sdk.IterationDriver = async function* (req) {
+	// External framework dispatches the tool and returns the result.
+	const result = await myExternalAgent.callTool("brain_search", { q: "…" });
+
+	// Surface the event without triggering SDK dispatch:
+	yield {
+		kind: "tool_call_observation",
+		tool: "brain_search",
+		args: { q: "…" },
+		status: "completed",
+		result,
+		durationMs: 120,
+	};
+
+	// Continue as normal.
+	yield { kind: "emit_done", payload: { ok: true } };
+};
+```
+
+`runAgent` on seeing this step:
+
+- Emits a `ToolCallObservation` event (not `ToolCallBefore/After`).
+- Does NOT invoke the permission chain.
+- Does NOT invoke `toolRegistry`.
+- Does NOT increment the per-iteration `toolCalls` metric (which
+  remains a dispatch-only counter).
+
+Status lifecycle (`started` / `completed` / `failed`) is free-form:
+drivers can emit one observation per dispatch or three (begin/end/
+error) — the consumer event stream respects whatever cadence the
+driver chose.
+
+Future slice may add advisory permission hooks that fire on
+observations for logging / policy (the current guard is strict:
+permission chain never fires). File an issue if advisory hooks
+become load-bearing for a real consumer.
 
 ## Tool plugin loader (Group 3a)
 
