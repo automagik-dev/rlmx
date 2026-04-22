@@ -1,11 +1,13 @@
-# rlmx SDK — Event Stream + Session / Permission / Validate primitives + runAgent
+# rlmx SDK — Events, runAgent, primitives, tool loader
 
-> **Status:** Wish B Groups 1 + 2 + 2b.
+> **Status:** Wish B Groups 1 + 2 + 2b + 2c + 3a.
 > G1 shipped event types + emitter.
 > G2 added session persistence, permission hooks, validate primitive, session-lifecycle events.
-> **G2b wires everything into `runAgent()`** — the pluggable driver seam lets consumers
-> plug in a canned driver (tests) or (later) `rlm.ts` (production). CLI entry
-> switch-over remains a separate slice.
+> G2b wired everything into `runAgent()` with a pluggable driver seam.
+> G2c proved the wiring against a live LLM via `rlmDriver`.
+> **G3a adds the tool plugin loader: `agent.yaml` spec parser, in-process
+> `ToolRegistry`, JS/MJS plugin resolution, RTK as a first-class tool,
+> and per-depth structured metrics riding on `IterationOutput.metrics`.**
 > See `.genie/wishes/rlmx-sdk-upgrade/WISH.md`.
 
 The SDK yields a stream of typed events describing one agent run.
@@ -159,15 +161,84 @@ boundaries; the emitter closes with `SessionClose { reason: "abort" }`
 and the snapshot is checkpointed so `resumeAgent(sessionId, store)`
 picks up where abort hit.
 
+## Tool plugin loader (Group 3a)
+
+```ts
+import { sdk } from "@automagik/rlmx";
+
+// 1. Load the agent's declared shape
+const spec = await sdk.loadAgentSpec("/path/to/my-agent");
+
+// 2. Register pre-built tools that ship with the SDK
+const registry = sdk.createToolRegistry();
+await sdk.registerRtkTool(registry); // no-op if rtk binary absent
+
+// 3. Fill in the rest from `tools/*.mjs` files next to agent.yaml
+const { loaded, skipped, missing } = await sdk.loadPluginTools(spec, registry);
+// loaded:  tools newly added from files
+// skipped: pre-registered (e.g. rtk) — file ignored
+// missing: declared in agent.yaml but no plugin file on disk
+
+// 4. Hand the registry to runAgent
+for await (const ev of sdk.runAgent({
+	agentId: "my-agent",
+	sessionId: "s-1",
+	input: "hello",
+	driver,                     // IterationDriver (canned or rlmDriver)
+	toolRegistry: registry,     // replaces `toolResolver`
+})) {
+	// ...
+}
+```
+
+### Plugin file shape (`tools/<name>.mjs` or `.js`)
+
+```js
+export default async function greet(args, ctx) {
+	// args  — the payload from an IterationStep `tool_call`
+	// ctx   — { tool, sessionId, iteration, signal }
+	return `hello ${args.name}`;
+}
+```
+
+Extension priority: `.mjs` → `.js`. TypeScript source loading lands in G3b
+when the Python plugin path also lands (shared concern: runtime loader).
+
+## Per-depth metrics (Group 3a)
+
+`IterationOutputEvent.metrics` is optional and present whenever runAgent
+is driving (i.e. always when you use `runAgent()`):
+
+```ts
+{
+	depth: 0,         // recursion depth this iteration ran at
+	parentDepth: -1,  // top-level convention
+	latencyMs: 742,
+	toolCalls: 3,     // includes denies
+	// Optional — consumer-supplied via MetricsRecorder inside the driver:
+	costUsd: 0.0012,
+	tokens: { input: 420, output: 58, cached: 12 },
+	cacheHitRatio: 0.3,
+}
+```
+
+Pass `{ depth, parentDepth }` on `AgentConfig` when driving nested `rlm_query`
+recursions so per-depth aggregation has the right context. The driver can
+inject cost/tokens/cache via a `MetricsRecorder` passed through `metricsRecorder`
+on `AgentConfig`.
+
 ## Scope boundary
 
 These PRs ship contract shape + emit infrastructure + Group-2
-primitives + the `runAgent()` wire (G2b).
-They do **not**:
+primitives + the `runAgent()` wire (G2b) + the tool plugin loader /
+RTK / metrics (G3a). They do **not**:
 
 - instrument `rlm.ts` directly — the iteration logic is behind the
   `IterationDriver` seam, so `rlm.ts` remains untouched until a
   cutover slice wraps it as a driver;
 - switch the CLI to use `runAgent()` — `rlmx "query"` still drives
   `rlmLoop` as before;
+- load `.ts`-source plugins — only pre-compiled `.mjs` / `.js`
+  (the shared-runtime concern with Python loading lands in G3b);
+- load Python plugins (G3b);
 - ship a pgserve-backed `SessionStore` implementation.

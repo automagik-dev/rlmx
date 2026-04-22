@@ -35,6 +35,8 @@
  */
 
 import { createEmitter, type EventStream } from "./emitter.js";
+import { createMetricsRecorder, type MetricsRecorder } from "./metrics.js";
+import type { ToolRegistry } from "./tool-registry.js";
 import {
 	type AgentStartEvent,
 	type EmitDoneEvent,
@@ -117,6 +119,15 @@ export interface AgentConfig {
 
 	readonly driver: IterationDriver;
 	readonly toolResolver?: ToolResolver;
+	/**
+	 * Tool registry (Wish B G3a). When supplied, tool-call dispatch
+	 * prefers the registry: each `tool_call` step looks up `tool` in
+	 * the registry and invokes the handler. Missing handlers surface
+	 * as `Error{phase:"tool"}`. Takes precedence over `toolResolver`
+	 * when both are set; the resolver acts as a fallback for names
+	 * the registry doesn't know about.
+	 */
+	readonly toolRegistry?: ToolRegistry;
 
 	readonly sessionStore?: SessionStore;
 	readonly permissionHooks?: readonly PermissionHook[];
@@ -131,6 +142,18 @@ export interface AgentConfig {
 
 	/** Opaque snapshot attached to the AgentStart event for consumers. */
 	readonly configSnapshot?: Readonly<Record<string, unknown>>;
+
+	/**
+	 * Recursion depth this run is executing at. Top-level is 0. A
+	 * consumer driving nested `rlm_query` recursion should pass the
+	 * parent's depth + 1 so per-depth metrics carry the correct
+	 * context (Wish B G3).
+	 */
+	readonly depth?: number;
+	/** Parent depth for the per-depth metrics. Default -1 (top-level). */
+	readonly parentDepth?: number;
+	/** Custom recorder — when omitted, runAgent creates one per run. */
+	readonly metricsRecorder?: MetricsRecorder;
 }
 
 const DEFAULT_MAX_ITERATIONS = 32;
@@ -177,6 +200,7 @@ async function drive(
 		input,
 		driver,
 		toolResolver,
+		toolRegistry,
 		sessionStore,
 		permissionHooks = [],
 		validateSchema,
@@ -185,7 +209,35 @@ async function drive(
 		maxIterations = DEFAULT_MAX_ITERATIONS,
 		signal,
 		configSnapshot = {},
+		depth = 0,
+		parentDepth = -1,
+		metricsRecorder = createMetricsRecorder(),
 	} = config;
+
+	/**
+	 * Resolve a tool call via the registry first, the resolver second.
+	 * Throws when neither knows the tool so the error plumbing fires a
+	 * `ToolCallAfter{ok:false}` + `Error{phase:"tool"}` pair.
+	 */
+	async function dispatchTool(
+		tool: string,
+		args: unknown,
+		sig: AbortSignal,
+	): Promise<unknown> {
+		const handler = toolRegistry?.get(tool);
+		if (handler) {
+			return handler(args, {
+				tool,
+				sessionId,
+				iteration: currentIteration,
+				signal: sig,
+			});
+		}
+		if (toolResolver) return toolResolver(tool, args, sig);
+		throw new Error(`unknown tool: "${tool}" (no registry/resolver match)`);
+	}
+
+	let currentIteration = 0; // captured by dispatchTool for ctx.iteration
 
 	// ── emit AgentStart ──────────────────────────────────────────────
 	const startEv: AgentStartEvent = makeEvent("AgentStart", {
@@ -228,6 +280,8 @@ async function drive(
 	try {
 		iterationLoop: while (!done && iteration < maxIterations && !ac.signal.aborted) {
 			iteration++;
+			currentIteration = iteration;
+			metricsRecorder.start(depth, parentDepth);
 			const iterStart: IterationStartEvent = makeEvent("IterationStart", {
 				sessionId,
 				iteration,
@@ -279,6 +333,10 @@ async function drive(
 							args: effectiveArgs,
 						} as Omit<ToolCallBeforeEvent, "type" | "timestamp">);
 						em.emit(before);
+						// Count every attempted tool call, including denies — the
+						// metric answers "how many times did the agent TRY to call
+						// a tool this iteration", which denies are a signal for.
+						metricsRecorder.incrToolCalls();
 
 						if (decision.decision === "deny") {
 							const afterDeny: ToolCallAfterEvent = makeEvent(
@@ -309,8 +367,8 @@ async function drive(
 						let result: unknown = null;
 						let ok = true;
 						try {
-							if (toolResolver) {
-								result = await toolResolver(
+							if (toolRegistry || toolResolver) {
+								result = await dispatchTool(
 									step.tool,
 									effectiveArgs,
 									ac.signal,
@@ -424,6 +482,7 @@ async function drive(
 				sessionId,
 				iteration,
 				output: iterOutput,
+				metrics: metricsRecorder.snapshot(),
 			} as Omit<IterationOutputEvent, "type" | "timestamp">);
 			em.emit(out);
 

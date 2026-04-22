@@ -53,6 +53,26 @@ export interface IterationOutputEvent extends BaseEvent {
 	readonly sessionId: string;
 	readonly iteration: number;
 	readonly output: string;
+	/**
+	 * Per-iteration structured metrics (Wish B G3). Optional — present
+	 * when runAgent (or a consumer wrapper) wires a `MetricsRecorder`.
+	 * See `metrics.ts` for the shape. Keeps `ALL_AGENT_EVENT_TYPES`
+	 * pinned at 12 by riding on an existing event instead of adding
+	 * a new `MetricEvent` variant.
+	 */
+	readonly metrics?: {
+		readonly depth: number;
+		readonly parentDepth: number;
+		readonly latencyMs: number;
+		readonly toolCalls: number;
+		readonly costUsd?: number;
+		readonly tokens?: {
+			readonly input: number;
+			readonly output: number;
+			readonly cached?: number;
+		};
+		readonly cacheHitRatio?: number;
+	};
 }
 
 export interface ToolCallBeforeEvent extends BaseEvent {
