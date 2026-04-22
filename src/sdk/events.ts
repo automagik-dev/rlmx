@@ -23,7 +23,9 @@ export type AgentEventType =
 	| "Validation"
 	| "Message"
 	| "EmitDone"
-	| "Error";
+	| "Error"
+	| "SessionOpen"
+	| "SessionClose";
 
 /** Base shape — every event carries a timestamp + discriminant. */
 interface BaseEvent {
@@ -124,6 +126,26 @@ export interface ErrorEvent extends BaseEvent {
 	};
 }
 
+/**
+ * Session lifecycle — defined in Group 2 alongside the Session API
+ * (`resumeAgent` / `pauseAgent`). These bracket a session; within
+ * them the 10 wish-spec events flow as before.
+ */
+export interface SessionOpenEvent extends BaseEvent {
+	readonly type: "SessionOpen";
+	readonly sessionId: string;
+	/** `true` when `resumeAgent` found an existing snapshot. */
+	readonly resumed: boolean;
+}
+
+export type SessionCloseReason = "complete" | "pause" | "abort" | "error";
+
+export interface SessionCloseEvent extends BaseEvent {
+	readonly type: "SessionClose";
+	readonly sessionId: string;
+	readonly reason: SessionCloseReason;
+}
+
 /** Discriminated union — the sole surface SDK consumers iterate over. */
 export type AgentEvent =
 	| AgentStartEvent
@@ -135,13 +157,34 @@ export type AgentEvent =
 	| ValidationEvent
 	| MessageEvent
 	| EmitDoneEvent
-	| ErrorEvent;
+	| ErrorEvent
+	| SessionOpenEvent
+	| SessionCloseEvent;
 
 /**
  * Exhaustive sentinel — useful for switch statements so TS flags any
  * consumer that forgets to handle a new variant as the union grows.
  */
 export const ALL_AGENT_EVENT_TYPES: readonly AgentEventType[] = [
+	"AgentStart",
+	"IterationStart",
+	"IterationOutput",
+	"ToolCallBefore",
+	"ToolCallAfter",
+	"Recurse",
+	"Validation",
+	"Message",
+	"EmitDone",
+	"Error",
+	"SessionOpen",
+	"SessionClose",
+] as const;
+
+/** The 10 wish-spec event types. Session lifecycle types (SessionOpen /
+ *  SessionClose) arrive in Group 2 as additions — `ALL_AGENT_EVENT_TYPES`
+ *  above is the full current union, this constant stays frozen at the
+ *  WISH.md L21 contract so regression tests can pin it. */
+export const WISH_SPEC_EVENT_TYPES: readonly AgentEventType[] = [
 	"AgentStart",
 	"IterationStart",
 	"IterationOutput",
