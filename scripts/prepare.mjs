@@ -1,33 +1,42 @@
 #!/usr/bin/env node
 /**
- * Cross-context `prepare` hook.
+ * Cross-context `prepare` hook (revised 2026-04-22).
  *
- * npm / bun run `prepare` in two very different situations:
+ * npm / bun runs `prepare` in two very different situations:
  *
- *   1. **Local development checkout** — `npm install` inside rlmx's
- *      own repo. husky is present as a devDependency; we want it to
- *      set up git hooks. Downstream consumers haven't installed us
- *      yet, so building `dist/` is nice-to-have (covered by `npm run
- *      build` when the dev actually works).
+ *   1. **Local development checkout** — `npm install` inside rlmx's own
+ *      repo. husky is present as a devDependency; we want it to set up
+ *      git hooks. The build step should also run so dist/ stays in
+ *      sync with src/ for committers.
  *
- *   2. **Git-URL install by a consumer** — e.g.
- *      `npm install git+https://github.com/automagik-dev/rlmx#<sha>`.
- *      Consumers only install our `dependencies`, so husky is NOT
- *      present. But they rely on our `main` field
- *      (`./dist/src/index.js`) which DOES NOT EXIST in git (we publish
- *      it via the `files` field in the npm tarball, which git doesn't
- *      mirror). So we must build `dist/` at install time.
+ *   2. **Git-URL consumer install** — e.g.
+ *      `bun add git+https://github.com/automagik-dev/rlmx#<sha>`.
+ *      The consumer's package manager may or may not run prepare
+ *      (bun blocks trusted scripts by default), and devDependencies
+ *      that `tsc` needs (like `@types/js-yaml`) may not be installed
+ *      before prepare fires.
  *
- * This script handles both: try to run husky (no-op in consumer
- * context where it's missing), then run the build unconditionally.
- * Any build failure is loud — a consumer with a broken install is a
- * landmine; better to fail the install than to leave it silent.
+ * New strategy: `dist/` is now committed to the git repo (see
+ * `.gitignore` note). So consumer installs get a working dist
+ * regardless of whether prepare fires. prepare's job becomes:
  *
- * Spec: dogfood-fresh + simone feedback on brain PR #352's dist-copy
- * caveat (2026-04-22).
+ *   • husky setup when present (dev-only)
+ *   • best-effort build — attempt, but DO NOT fail the install if
+ *     build can't run (missing devDeps in consumer flows, husky
+ *     untrusted-script block, etc.). The committed dist/ is the
+ *     authoritative artifact consumers import; a failed local build
+ *     doesn't stop them from using rlmx.
+ *
+ * When the committer forgets to run `npm run build` before
+ * committing src/ changes, CI catches it via the `check` script plus
+ * the test suite (which executes `dist/tests/*.test.js`). So the
+ * prepare hook being tolerant of build failures in consumer contexts
+ * does not create a silent staleness hazard for the canonical repo
+ * tree.
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 function run(cmd, args, opts = {}) {
 	const r = spawnSync(cmd, args, {
@@ -43,19 +52,29 @@ function runOptional(cmd, args) {
 		stdio: ["ignore", "ignore", "ignore"],
 		shell: process.platform === "win32",
 	});
-	// Silently ignore — husky absence isn't an error in a consumer
-	// install, only a dev-env miss.
 	return r.status === 0;
 }
 
-// 1. husky — dev git hooks. Silent fallthrough when missing.
+// 1. husky — dev git hooks. Silent fallthrough when missing
+//    (consumer installs don't have husky as devDep).
 runOptional("husky", []);
 
-// 2. build — required in consumer contexts. Loud failure.
+// 2. Best-effort build. Failure is a warning, not a hard error — the
+//    committed dist/ is the fallback. Consumers are NEVER blocked
+//    from installing because our build couldn't resolve @types/js-yaml
+//    or whatever transient devDep issue arises in their env.
 const buildStatus = run("npm", ["run", "build"]);
 if (buildStatus !== 0) {
+	// Check whether dist/ actually exists — if it does, we're fine.
+	const distPresent = existsSync("dist/src/index.js");
+	if (distPresent) {
+		console.warn(
+			`[rlmx prepare] build step failed (exit ${buildStatus}) but dist/src/index.js is present from the committed tree — continuing install. If you're a committer, run \`npm run build\` manually and commit dist/ before pushing.`,
+		);
+		process.exit(0);
+	}
 	console.error(
-		`[rlmx prepare] build failed (exit ${buildStatus}). dist/ not produced — consumers will fail to import. See the build output above.`,
+		`[rlmx prepare] build failed (exit ${buildStatus}) and dist/ is missing. This is a genuine broken install. See build output above.`,
 	);
 	process.exit(buildStatus);
 }
