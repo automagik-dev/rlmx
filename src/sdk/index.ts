@@ -72,3 +72,13 @@ export {
 	validateAgainstSchema,
 } from "./validate.js";
 export type { ValidateResult, ValidateSchema } from "./validate.js";
+
+// ─── runAgent (G2b) ──────────────────────────────────────────────
+export { runAgent } from "./agent.js";
+export type {
+	AgentConfig,
+	IterationDriver,
+	IterationRequest,
+	IterationStep,
+	ToolResolver,
+} from "./agent.js";
