@@ -1,10 +1,11 @@
-# rlmx SDK — Event Stream + Session / Permission / Validate primitives
+# rlmx SDK — Event Stream + Session / Permission / Validate primitives + runAgent
 
-> **Status:** Wish B Groups 1 + 2.
+> **Status:** Wish B Groups 1 + 2 + 2b.
 > G1 shipped event types + emitter.
-> G2 adds session persistence, permission hooks, validate primitive, and
-> the two session-lifecycle events. `runAgent()` wiring (instrumentation
-> of `src/rlm.ts`, the CLI entry switch-over) remains for a later slice.
+> G2 added session persistence, permission hooks, validate primitive, session-lifecycle events.
+> **G2b wires everything into `runAgent()`** — the pluggable driver seam lets consumers
+> plug in a canned driver (tests) or (later) `rlm.ts` (production). CLI entry
+> switch-over remains a separate slice.
 > See `.genie/wishes/rlmx-sdk-upgrade/WISH.md`.
 
 The SDK yields a stream of typed events describing one agent run.
@@ -114,13 +115,59 @@ if (!result.ok && sdk.shouldRetry(result, attempt)) {
 }
 ```
 
+## `runAgent()` — the wire (Group 2b)
+
+`runAgent(config)` takes an `AgentConfig` and returns an `EventStream`.
+Internally it drives an iteration loop, emits the 12 events, runs the
+permission chain before tool calls, validates `emit_done` payloads
+(with retry-once), and checkpoints to the session store.
+
+```ts
+import { sdk } from "@automagik/rlmx";
+
+const driver: sdk.IterationDriver = async function* (req) {
+	// Tests use canned drivers; production plugs rlm.ts here.
+	yield { kind: "tool_call", tool: "read_file", args: { path: "/tmp" } };
+	yield { kind: "emit_done", payload: { answer: "42" } };
+};
+
+const stream = sdk.runAgent({
+	agentId: "demo",
+	sessionId: "s-1",
+	input: "what is the answer?",
+	driver,
+	sessionStore: sdk.createFileSessionStore("/tmp/sessions"),
+	permissionHooks: [
+		(ctx) => ctx.tool.startsWith("write_")
+			? { decision: "deny", reason: "read-only" }
+			: { decision: "allow" },
+	],
+	validateSchema: {
+		type: "object",
+		required: ["answer"],
+		properties: { answer: { type: "string" } },
+	},
+});
+
+for await (const ev of stream) {
+	console.log(ev.type, ev.timestamp);
+}
+```
+
+`AbortSignal` support: pass `signal` to terminate gracefully at event
+boundaries; the emitter closes with `SessionClose { reason: "abort" }`
+and the snapshot is checkpointed so `resumeAgent(sessionId, store)`
+picks up where abort hit.
+
 ## Scope boundary
 
-These PRs ship contract shape + emit infrastructure + Group-2 primitives.
+These PRs ship contract shape + emit infrastructure + Group-2
+primitives + the `runAgent()` wire (G2b).
 They do **not**:
 
-- instrument `rlm.ts` with emit calls (later slice);
-- define `runAgent()` entry point (later slice);
-- wire permission hooks or `VALIDATE.md` into the actual tool-dispatch
-  path (arrives with `runAgent()`);
-- touch CLI behaviour — `rlmx "query"` is unchanged.
+- instrument `rlm.ts` directly — the iteration logic is behind the
+  `IterationDriver` seam, so `rlm.ts` remains untouched until a
+  cutover slice wraps it as a driver;
+- switch the CLI to use `runAgent()` — `rlmx "query"` still drives
+  `rlmLoop` as before;
+- ship a pgserve-backed `SessionStore` implementation.
