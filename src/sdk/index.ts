@@ -30,6 +30,8 @@ export type {
 	SessionOpenEvent,
 	ToolCallAfterEvent,
 	ToolCallBeforeEvent,
+	ToolCallObservationEvent,
+	ToolCallObservationStatus,
 	ValidationEvent,
 } from "./events.js";
 

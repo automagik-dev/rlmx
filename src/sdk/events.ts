@@ -25,7 +25,8 @@ export type AgentEventType =
 	| "EmitDone"
 	| "Error"
 	| "SessionOpen"
-	| "SessionClose";
+	| "SessionClose"
+	| "ToolCallObservation";
 
 /** Base shape — every event carries a timestamp + discriminant. */
 interface BaseEvent {
@@ -166,6 +167,46 @@ export interface SessionCloseEvent extends BaseEvent {
 	readonly reason: SessionCloseReason;
 }
 
+/**
+ * Observation of a tool call whose dispatch happens elsewhere (e.g.
+ * inside a wrapped framework like pi-agent or LangChain). runAgent
+ * emits this when the driver yields a `tool_call_observation`
+ * IterationStep — it does NOT invoke the permission chain or the
+ * tool registry for observations (the external framework already
+ * handled both). Consumers interested in observation-based policy
+ * subscribe to this event directly.
+ *
+ * `status` lifecycle:
+ *   - `"started"` — driver observed the tool call begin
+ *   - `"completed"` — tool returned successfully, `result` present
+ *   - `"failed"` — tool errored, `error` present
+ *
+ * Intended for consumer drivers that wrap an external agent
+ * framework whose tool dispatch is already complete — e.g. brain's
+ * preservation bridge driving pi-agent. Native SDK tool dispatch
+ * (`tool_call` IterationStep) stays the primary path for
+ * consumers authoring loops inside the SDK.
+ */
+export type ToolCallObservationStatus = "started" | "completed" | "failed";
+
+export interface ToolCallObservationEvent extends BaseEvent {
+	readonly type: "ToolCallObservation";
+	readonly sessionId: string;
+	readonly iteration: number;
+	readonly tool: string;
+	readonly args: unknown;
+	readonly status: ToolCallObservationStatus;
+	readonly result?: unknown;
+	readonly error?: {
+		readonly name: string;
+		readonly message: string;
+	};
+	/** Wall-clock duration of the external dispatch, when the driver
+	 *  can report it. Optional — drivers that only surface completion
+	 *  may not have timing. */
+	readonly durationMs?: number;
+}
+
 /** Discriminated union — the sole surface SDK consumers iterate over. */
 export type AgentEvent =
 	| AgentStartEvent
@@ -179,7 +220,8 @@ export type AgentEvent =
 	| EmitDoneEvent
 	| ErrorEvent
 	| SessionOpenEvent
-	| SessionCloseEvent;
+	| SessionCloseEvent
+	| ToolCallObservationEvent;
 
 /**
  * Exhaustive sentinel — useful for switch statements so TS flags any
@@ -198,6 +240,7 @@ export const ALL_AGENT_EVENT_TYPES: readonly AgentEventType[] = [
 	"Error",
 	"SessionOpen",
 	"SessionClose",
+	"ToolCallObservation",
 ] as const;
 
 /** The 10 wish-spec event types. Session lifecycle types (SessionOpen /

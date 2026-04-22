@@ -48,6 +48,7 @@ import {
 	type SessionCloseReason,
 	type ToolCallAfterEvent,
 	type ToolCallBeforeEvent,
+	type ToolCallObservationEvent,
 	type ValidationEvent,
 } from "./events.js";
 import {
@@ -84,6 +85,24 @@ export type IterationStep =
 			readonly kind: "tool_call";
 			readonly tool: string;
 			readonly args: unknown;
+	  }
+	| {
+			/**
+			 * Observation of a tool call whose dispatch happened elsewhere
+			 * — e.g. inside a wrapped agent framework (pi-agent, LangChain).
+			 * runAgent emits a `ToolCallObservation` event with the carried
+			 * payload and does NOT invoke the permission chain or the tool
+			 * registry. Consumers that want observation-based policy should
+			 * subscribe to the event. See `events.ts`
+			 * `ToolCallObservationEvent`.
+			 */
+			readonly kind: "tool_call_observation";
+			readonly tool: string;
+			readonly args: unknown;
+			readonly status: "started" | "completed" | "failed";
+			readonly result?: unknown;
+			readonly error?: { readonly name: string; readonly message: string };
+			readonly durationMs?: number;
 	  }
 	| { readonly kind: "emit_done"; readonly payload: unknown }
 	| { readonly kind: "error"; readonly error: Error };
@@ -396,6 +415,37 @@ async function drive(
 							ok,
 						} as Omit<ToolCallAfterEvent, "type" | "timestamp">);
 						em.emit(after);
+						continue;
+					}
+
+					case "tool_call_observation": {
+						// Observation: tool dispatch happened OUTSIDE the SDK
+						// (typically inside a wrapped framework like pi-agent
+						// or LangChain). runAgent does NOT invoke the
+						// permission chain or the tool registry. The step
+						// surfaces as a dedicated `ToolCallObservation` event
+						// so consumers can distinguish from SDK-dispatched
+						// tool_call / tool_call_after pairs.
+						const obs: ToolCallObservationEvent = makeEvent(
+							"ToolCallObservation",
+							{
+								sessionId,
+								iteration,
+								tool: step.tool,
+								args: step.args,
+								status: step.status,
+								result: step.result,
+								error: step.error,
+								durationMs: step.durationMs,
+							} as Omit<ToolCallObservationEvent, "type" | "timestamp">,
+						);
+						em.emit(obs);
+						// Count observations distinctly from dispatched tool
+						// calls — consumer metrics can diff observed vs
+						// dispatched to understand execution topology.
+						// (`toolCalls` stays a dispatch-only counter; this
+						// is tracked separately when the recorder lands a
+						// `incrObservedCalls` helper.)
 						continue;
 					}
 
