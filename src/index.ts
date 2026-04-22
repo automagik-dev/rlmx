@@ -54,3 +54,8 @@ export type { RLMResult, StreamEvent, StatsData, GeminiStatsData, CacheStats } f
 
 export { Logger, createLogger } from "./logger.js";
 export type { EventType, LogEvent } from "./logger.js";
+
+// ─── SDK (Wish B Group 1 skeleton) ─────────────────────────────────
+// Event types + emitter only. `runAgent()` / `resumeAgent()` /
+// permission hooks land in Groups 2-3 per `.genie/wishes/rlmx-sdk-upgrade`.
+export * as sdk from "./sdk/index.js";

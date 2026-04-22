@@ -1,0 +1,190 @@
+/**
+ * SDK event types — Wish B Group 1 skeleton (issue rlmx-sdk-upgrade).
+ *
+ * These 10 events are the contract the SDK exposes to consumers of
+ * `runAgent()`. They are yielded in order by an async iterator (see
+ * `emitter.ts`) and together form a complete narrative of one agent
+ * run: configuration → iteration loop → tool use → recursion →
+ * validation → emit_done → error/success.
+ *
+ * Group 1 defines types and emit infrastructure only. Instrumentation
+ * hooks inside `rlm.ts`, the `runAgent()` entry point, and consumer
+ * wiring (session, permissions, validate) land in Groups 2-3.
+ *
+ * Spec source: `.genie/wishes/rlmx-sdk-upgrade/WISH.md` L21.
+ */
+export type AgentEventType =
+	| "AgentStart"
+	| "IterationStart"
+	| "IterationOutput"
+	| "ToolCallBefore"
+	| "ToolCallAfter"
+	| "Recurse"
+	| "Validation"
+	| "Message"
+	| "EmitDone"
+	| "Error";
+
+/** Base shape — every event carries a timestamp + discriminant. */
+interface BaseEvent {
+	/** ISO-8601 timestamp emitted by `iso()`. */
+	readonly timestamp: string;
+}
+
+/** Fired once per `runAgent()` before the first iteration. */
+export interface AgentStartEvent extends BaseEvent {
+	readonly type: "AgentStart";
+	readonly agentId: string;
+	readonly sessionId: string;
+	/** Opaque snapshot of the config the SDK resolved at spawn time. */
+	readonly config: Readonly<Record<string, unknown>>;
+}
+
+export interface IterationStartEvent extends BaseEvent {
+	readonly type: "IterationStart";
+	readonly sessionId: string;
+	readonly iteration: number;
+}
+
+export interface IterationOutputEvent extends BaseEvent {
+	readonly type: "IterationOutput";
+	readonly sessionId: string;
+	readonly iteration: number;
+	readonly output: string;
+}
+
+export interface ToolCallBeforeEvent extends BaseEvent {
+	readonly type: "ToolCallBefore";
+	readonly sessionId: string;
+	readonly iteration: number;
+	readonly tool: string;
+	readonly args: unknown;
+}
+
+export interface ToolCallAfterEvent extends BaseEvent {
+	readonly type: "ToolCallAfter";
+	readonly sessionId: string;
+	readonly iteration: number;
+	readonly tool: string;
+	readonly result: unknown;
+	readonly durationMs: number;
+	readonly ok: boolean;
+}
+
+/** Emitted each time the agent recurses via `rlm_query`. */
+export interface RecurseEvent extends BaseEvent {
+	readonly type: "Recurse";
+	readonly sessionId: string;
+	readonly iteration: number;
+	readonly depth: number;
+	readonly parentDepth: number;
+	readonly query: string;
+}
+
+/**
+ * Validation outcome after an `emit_done` payload. `status: "pass"` ends
+ * the loop; `status: "fail"` with `attempt: 1` triggers a retry with
+ * the schema hint prepended. `attempt: 2` with `"fail"` is terminal
+ * and forwarded as a ValidationFailedEvent via the caller.
+ */
+export interface ValidationEvent extends BaseEvent {
+	readonly type: "Validation";
+	readonly sessionId: string;
+	readonly status: "pass" | "fail";
+	readonly attempt: number;
+	readonly errors?: readonly string[];
+}
+
+export interface MessageEvent extends BaseEvent {
+	readonly type: "Message";
+	readonly sessionId: string;
+	readonly role: "system" | "user" | "assistant";
+	readonly content: string;
+}
+
+export interface EmitDoneEvent extends BaseEvent {
+	readonly type: "EmitDone";
+	readonly sessionId: string;
+	readonly payload: unknown;
+}
+
+export interface ErrorEvent extends BaseEvent {
+	readonly type: "Error";
+	readonly sessionId: string;
+	/**
+	 * Phase marker — lets consumers attribute the error to a specific
+	 * pipeline stage (`"spawn" | "iteration" | "tool" | "validate" | ...`).
+	 * Free-form string; consumers should not switch on unknown values.
+	 */
+	readonly phase: string;
+	readonly error: {
+		readonly name: string;
+		readonly message: string;
+		readonly stack?: string;
+	};
+}
+
+/** Discriminated union — the sole surface SDK consumers iterate over. */
+export type AgentEvent =
+	| AgentStartEvent
+	| IterationStartEvent
+	| IterationOutputEvent
+	| ToolCallBeforeEvent
+	| ToolCallAfterEvent
+	| RecurseEvent
+	| ValidationEvent
+	| MessageEvent
+	| EmitDoneEvent
+	| ErrorEvent;
+
+/**
+ * Exhaustive sentinel — useful for switch statements so TS flags any
+ * consumer that forgets to handle a new variant as the union grows.
+ */
+export const ALL_AGENT_EVENT_TYPES: readonly AgentEventType[] = [
+	"AgentStart",
+	"IterationStart",
+	"IterationOutput",
+	"ToolCallBefore",
+	"ToolCallAfter",
+	"Recurse",
+	"Validation",
+	"Message",
+	"EmitDone",
+	"Error",
+] as const;
+
+/** ISO-8601 in UTC — identical across machines + easy for downstream parsing. */
+export function iso(now: Date = new Date()): string {
+	return now.toISOString();
+}
+
+/**
+ * Build an event from a partial — the SDK internals call this instead
+ * of writing object literals, so the timestamp + discriminant land
+ * consistently and future additions (e.g. `spanId`) can be filled in
+ * here without touching every call site.
+ */
+export function makeEvent<E extends AgentEvent>(
+	type: E["type"],
+	fields: Omit<E, "type" | "timestamp"> & { timestamp?: string },
+): E {
+	const { timestamp, ...rest } = fields as Omit<E, "type" | "timestamp"> & {
+		timestamp?: string;
+	};
+	return { ...(rest as object), type, timestamp: timestamp ?? iso() } as E;
+}
+
+/**
+ * Round-trip hardness check — used in tests. Every event must
+ * serialize to JSON without losing its discriminant or timestamp.
+ */
+export function isAgentEvent(value: unknown): value is AgentEvent {
+	if (!value || typeof value !== "object") return false;
+	const v = value as Record<string, unknown>;
+	return (
+		typeof v.type === "string" &&
+		typeof v.timestamp === "string" &&
+		(ALL_AGENT_EVENT_TYPES as readonly string[]).includes(v.type as string)
+	);
+}
