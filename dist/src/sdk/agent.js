@@ -237,6 +237,33 @@ async function drive(config, em) {
                         em.emit(after);
                         continue;
                     }
+                    case "tool_call_observation": {
+                        // Observation: tool dispatch happened OUTSIDE the SDK
+                        // (typically inside a wrapped framework like pi-agent
+                        // or LangChain). runAgent does NOT invoke the
+                        // permission chain or the tool registry. The step
+                        // surfaces as a dedicated `ToolCallObservation` event
+                        // so consumers can distinguish from SDK-dispatched
+                        // tool_call / tool_call_after pairs.
+                        const obs = makeEvent("ToolCallObservation", {
+                            sessionId,
+                            iteration,
+                            tool: step.tool,
+                            args: step.args,
+                            status: step.status,
+                            result: step.result,
+                            error: step.error,
+                            durationMs: step.durationMs,
+                        });
+                        em.emit(obs);
+                        // Count observations distinctly from dispatched tool
+                        // calls — consumer metrics can diff observed vs
+                        // dispatched to understand execution topology.
+                        // (`toolCalls` stays a dispatch-only counter; this
+                        // is tracked separately when the recorder lands a
+                        // `incrObservedCalls` helper.)
+                        continue;
+                    }
                     case "emit_done": {
                         if (validateSchema) {
                             validateAttempt++;
