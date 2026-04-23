@@ -1,5 +1,5 @@
 /**
- * Tool registry — Wish B Group 3a.
+ * Tool registry — Wish B Group 3a + rlmx#78.
  *
  * Maps tool names declared in `agent.yaml` (`tools: [...]`) to
  * in-process handler functions the SDK can dispatch to. Both
@@ -7,11 +7,20 @@
  * handlers (TS plugins from `<agent-dir>/tools/<name>.ts`) land in
  * the same registry.
  *
- * The registry is deliberately boring: `register`, `get`, `list`,
- * `has`. Anything richer — permission overlays, timeouts, retries —
- * belongs in the runAgent dispatch path, not here.
+ * Each handler may carry an optional `ToolSchema` (rlmx#78) — the
+ * description + JSON-Schema parameters the rlmDriver feeds into the
+ * LLM's native function-calling channel. Handlers without schemas are
+ * still dispatchable (via explicit `tool_call` steps emitted by a
+ * driver that composes the args another way) but will NOT be exposed
+ * to the LLM as callable functions.
  *
- * Spec: `.genie/wishes/rlmx-sdk-upgrade/WISH.md` L24, L164-168.
+ * The registry is deliberately boring: `register`, `get`, `list`,
+ * `has`, `describe`, `listSchemas`. Anything richer — permission
+ * overlays, timeouts, retries — belongs in the runAgent dispatch path,
+ * not here.
+ *
+ * Spec: `.genie/wishes/rlmx-sdk-upgrade/WISH.md` L24, L164-168;
+ * rlmx#78 (tool dispatch in rlmDriver).
  */
 export class UnknownToolError extends Error {
     toolName;
@@ -24,12 +33,15 @@ export class UnknownToolError extends Error {
 /** Create a fresh in-memory tool registry. Simple Map under the hood. */
 export function createToolRegistry() {
     const handlers = new Map();
+    const schemas = new Map();
     return {
-        register(name, handler) {
+        register(name, handler, schema) {
             if (name.length === 0) {
                 throw new TypeError("tool registry: name must be non-empty");
             }
             handlers.set(name, handler);
+            if (schema)
+                schemas.set(name, schema);
         },
         get(name) {
             return handlers.get(name);
@@ -40,11 +52,25 @@ export function createToolRegistry() {
         list() {
             return [...handlers.keys()];
         },
-        override(name, handler) {
+        override(name, handler, schema) {
             if (!handlers.has(name))
                 return false;
             handlers.set(name, handler);
+            if (schema)
+                schemas.set(name, schema);
             return true;
+        },
+        describe(name) {
+            return schemas.get(name);
+        },
+        listSchemas() {
+            const out = [];
+            for (const [name, schema] of schemas) {
+                if (!handlers.has(name))
+                    continue;
+                out.push({ name, schema });
+            }
+            return out;
         },
     };
 }

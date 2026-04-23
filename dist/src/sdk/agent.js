@@ -146,7 +146,26 @@ async function drive(config, em) {
                 retryHint,
             };
             let iterOutput = "";
-            for await (const step of driver(req, ac.signal)) {
+            // Manual iteration so we can push tool outcomes back into the
+            // driver via `.next(outcome)`. Async generators treat a call
+            // to `.next(value)` as the return value of the current `yield`,
+            // which is how multi-turn drivers (rlmDriver in tool-dispatch
+            // mode) fold tool results back into the next LLM call.
+            const iter = driver(req, ac.signal);
+            let nextInput;
+            while (true) {
+                if (ac.signal.aborted)
+                    break iterationLoop;
+                const { value: step, done: iterDone } = await iter.next(nextInput);
+                nextInput = undefined;
+                if (iterDone)
+                    break;
+                if (!step)
+                    continue;
+                // Re-check abort AFTER the driver yielded — the driver
+                // itself may have triggered the abort in its yield
+                // prelude. Matches the pre-rlmx#78 `for await` semantics
+                // which checked before processing each step.
                 if (ac.signal.aborted)
                     break iterationLoop;
                 switch (step.kind) {
@@ -203,11 +222,26 @@ async function drive(config, em) {
                                 },
                             });
                             em.emit(err);
+                            // Surface the denial to the driver so it can
+                            // explain the failure back to the LLM instead
+                            // of looping forever re-issuing the call.
+                            nextInput = {
+                                tool: step.tool,
+                                ok: false,
+                                result: null,
+                                error: {
+                                    name: "PermissionDenied",
+                                    message: decision.reason,
+                                },
+                                durationMs: 0,
+                                denied: true,
+                            };
                             continue;
                         }
                         const t0 = Date.now();
                         let result = null;
                         let ok = true;
+                        let toolError;
                         try {
                             if (toolRegistry || toolResolver) {
                                 result = await dispatchTool(step.tool, effectiveArgs, ac.signal);
@@ -215,26 +249,37 @@ async function drive(config, em) {
                         }
                         catch (e) {
                             ok = false;
-                            result = e instanceof Error ? e.message : String(e);
+                            toolError = e instanceof Error ? e : new Error(String(e));
+                            result = toolError.message;
                             const err = makeEvent("Error", {
                                 sessionId,
                                 phase: "tool",
                                 error: {
-                                    name: e instanceof Error ? e.name : "Error",
-                                    message: e instanceof Error ? e.message : String(e),
+                                    name: toolError.name,
+                                    message: toolError.message,
                                 },
                             });
                             em.emit(err);
                         }
+                        const durationMs = Date.now() - t0;
                         const after = makeEvent("ToolCallAfter", {
                             sessionId,
                             iteration,
                             tool: step.tool,
                             result,
-                            durationMs: Date.now() - t0,
+                            durationMs,
                             ok,
                         });
                         em.emit(after);
+                        nextInput = {
+                            tool: step.tool,
+                            ok,
+                            result,
+                            error: toolError
+                                ? { name: toolError.name, message: toolError.message }
+                                : undefined,
+                            durationMs,
+                        };
                         continue;
                     }
                     case "tool_call_observation": {

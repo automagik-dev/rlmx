@@ -17,13 +17,13 @@ export type { PermissionDecision, PermissionHook, PermissionHookContext, } from 
 export { MAX_VALIDATE_ATTEMPTS, buildRetryHint, parseValidateMd, shouldRetry, validateAgainstSchema, } from "./validate.js";
 export type { ValidateResult, ValidateSchema } from "./validate.js";
 export { runAgent } from "./agent.js";
-export type { AgentConfig, IterationDriver, IterationRequest, IterationStep, ToolResolver, } from "./agent.js";
+export type { AgentConfig, IterationDriver, IterationRequest, IterationStep, ToolCallOutcome, ToolResolver, } from "./agent.js";
 export { formatRlmPrompt, rlmDriver } from "./rlm-driver.js";
-export type { RlmDriverConfig } from "./rlm-driver.js";
+export type { RlmDriverConfig, RlmDriverToolsConfig, } from "./rlm-driver.js";
 export { loadAgentSpec, parseAgentSpec, resolveAgentPath, } from "./agent-spec.js";
 export type { AgentBudget, AgentScope, AgentSpec } from "./agent-spec.js";
 export { createToolRegistry, toolRegistryAsResolver, UnknownToolError, } from "./tool-registry.js";
-export type { ToolContext, ToolHandler, ToolRegistry } from "./tool-registry.js";
+export type { ToolContext, ToolHandler, ToolRegistry, ToolSchema } from "./tool-registry.js";
 export { InvalidPluginError, MissingPluginError, loadPluginTools, } from "./tool-loader.js";
 export type { LoadOptions, LoadResult } from "./tool-loader.js";
 export { registerRtkTool } from "./rtk-plugin.js";

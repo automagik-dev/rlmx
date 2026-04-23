@@ -74,6 +74,24 @@ import {
 	validateAgainstSchema,
 } from "./validate.js";
 
+/**
+ * Outcome of a tool_call dispatch, fed back to the driver via
+ * `AsyncGenerator.next(outcome)` so multi-turn drivers (rlmDriver
+ * in tool-dispatch mode, rlmx#78) can fold the result into the
+ * next LLM call as conversation history.
+ */
+export interface ToolCallOutcome {
+	readonly tool: string;
+	readonly ok: boolean;
+	readonly result: unknown;
+	readonly error?: { readonly name: string; readonly message: string };
+	readonly durationMs: number;
+	/** True when the permission chain denied the call. `result` is null and
+	 *  `ok` is false in this case; drivers that want to explain the denial
+	 *  to the LLM should surface `error.message` as a tool-result note. */
+	readonly denied?: boolean;
+}
+
 /** One step produced by an `IterationDriver` during a single iteration. */
 export type IterationStep =
 	| {
@@ -85,6 +103,11 @@ export type IterationStep =
 			readonly kind: "tool_call";
 			readonly tool: string;
 			readonly args: unknown;
+			/** Optional LLM-issued id (e.g. Gemini `functionCall.id`,
+			 *  Anthropic `tool_use.id`). Drivers that need to pair
+			 *  outcomes with ToolResultMessage.toolCallId should set
+			 *  this so the outcome comes back correlated. */
+			readonly id?: string;
 	  }
 	| {
 			/**
@@ -116,10 +139,26 @@ export interface IterationRequest {
 	readonly retryHint?: string;
 }
 
+/**
+ * An `IterationDriver` is an async generator that runAgent pumps.
+ *
+ * runAgent uses manual iteration (`iter.next(value)`) so drivers can
+ * receive tool-call outcomes back from runAgent — the generator's
+ * `yield` returns the `ToolCallOutcome` when the previously yielded
+ * step was a `tool_call` and runAgent finished dispatching it. For
+ * any other step kind (message, emit_done, error,
+ * tool_call_observation) the yield returns `undefined`.
+ *
+ * Drivers that don't care about tool outcomes (e.g. the legacy
+ * one-shot rlmDriver path) can just `yield step` and ignore the
+ * return value — behavior is unchanged from the pre-rlmx#78 contract.
+ */
 export type IterationDriver = (
 	req: IterationRequest,
 	signal: AbortSignal,
-) => AsyncIterable<IterationStep>;
+) =>
+	| AsyncIterable<IterationStep>
+	| AsyncGenerator<IterationStep, void, ToolCallOutcome | undefined>;
 
 /** Resolves a tool invocation. Called after a non-deny permission
  *  decision. When omitted, tool calls are recorded but not executed
@@ -315,7 +354,28 @@ async function drive(
 			};
 			let iterOutput = "";
 
-			for await (const step of driver(req, ac.signal)) {
+			// Manual iteration so we can push tool outcomes back into the
+			// driver via `.next(outcome)`. Async generators treat a call
+			// to `.next(value)` as the return value of the current `yield`,
+			// which is how multi-turn drivers (rlmDriver in tool-dispatch
+			// mode) fold tool results back into the next LLM call.
+			const iter = driver(req, ac.signal) as AsyncGenerator<
+				IterationStep,
+				void,
+				ToolCallOutcome | undefined
+			>;
+			let nextInput: ToolCallOutcome | undefined;
+
+			while (true) {
+				if (ac.signal.aborted) break iterationLoop;
+				const { value: step, done: iterDone } = await iter.next(nextInput);
+				nextInput = undefined;
+				if (iterDone) break;
+				if (!step) continue;
+				// Re-check abort AFTER the driver yielded — the driver
+				// itself may have triggered the abort in its yield
+				// prelude. Matches the pre-rlmx#78 `for await` semantics
+				// which checked before processing each step.
 				if (ac.signal.aborted) break iterationLoop;
 
 				switch (step.kind) {
@@ -379,12 +439,27 @@ async function drive(
 								},
 							} as Omit<ErrorEvent, "type" | "timestamp">);
 							em.emit(err);
+							// Surface the denial to the driver so it can
+							// explain the failure back to the LLM instead
+							// of looping forever re-issuing the call.
+							nextInput = {
+								tool: step.tool,
+								ok: false,
+								result: null,
+								error: {
+									name: "PermissionDenied",
+									message: decision.reason,
+								},
+								durationMs: 0,
+								denied: true,
+							};
 							continue;
 						}
 
 						const t0 = Date.now();
 						let result: unknown = null;
 						let ok = true;
+						let toolError: Error | undefined;
 						try {
 							if (toolRegistry || toolResolver) {
 								result = await dispatchTool(
@@ -395,26 +470,37 @@ async function drive(
 							}
 						} catch (e) {
 							ok = false;
-							result = e instanceof Error ? e.message : String(e);
+							toolError = e instanceof Error ? e : new Error(String(e));
+							result = toolError.message;
 							const err: ErrorEvent = makeEvent("Error", {
 								sessionId,
 								phase: "tool",
 								error: {
-									name: e instanceof Error ? e.name : "Error",
-									message: e instanceof Error ? e.message : String(e),
+									name: toolError.name,
+									message: toolError.message,
 								},
 							} as Omit<ErrorEvent, "type" | "timestamp">);
 							em.emit(err);
 						}
+						const durationMs = Date.now() - t0;
 						const after: ToolCallAfterEvent = makeEvent("ToolCallAfter", {
 							sessionId,
 							iteration,
 							tool: step.tool,
 							result,
-							durationMs: Date.now() - t0,
+							durationMs,
 							ok,
 						} as Omit<ToolCallAfterEvent, "type" | "timestamp">);
 						em.emit(after);
+						nextInput = {
+							tool: step.tool,
+							ok,
+							result,
+							error: toolError
+								? { name: toolError.name, message: toolError.message }
+								: undefined,
+							durationMs,
+						};
 						continue;
 					}
 
