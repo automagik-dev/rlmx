@@ -1,5 +1,12 @@
 # `agent.yaml` schema
 
+> **Stability:** `schema_version: 1` + `tools_api: 1` are **stable**
+> as of 2026-04-22 — production-validated by the `khal-os/brain`
+> consumer across L1 triage (30/30 ship), L2 preservation (ship at
+> variance ceiling), and L3 audit (in flight). Future schema changes
+> will introduce `schema_version: 2` as a parallel — v1 bridges
+> continue loading unchanged.
+
 The agent folder's `agent.yaml` file is a small YAML mapping that the
 SDK's `parseAgentSpec` / `loadAgentSpec` turn into an `AgentSpec`.
 The schema is **deliberately minimal** — only the fields the SDK
@@ -82,8 +89,8 @@ system: SYSTEM.md            # Relative to agent dir. Consumer loads
 
 | field | type | default | status | notes |
 |---|---|---|---|---|
-| `schema_version` / `schemaVersion` | number | `1` | SDK reads | Bumped when the schema itself changes. |
-| `tools_api` / `toolsApi` | number | `1` | SDK reads | Bumped when the tool contract changes. |
+| `schema_version` / `schemaVersion` | number | `1` | **SDK reads — stable** | Production-validated 2026-04-22. Bumped when the schema itself changes; prior versions stay loadable. |
+| `tools_api` / `toolsApi` | number | `1` | **SDK reads — stable** | Production-validated 2026-04-22. Bumped when the tool contract changes; prior versions stay loadable. |
 | `shape` | `"single-step" \| "loop" \| "recurse"` | `"single-step"` | SDK reads, enforces allowed values | Rejects unknown shapes with a named error. |
 | `model` | string | — | passthrough | Not validated. Consumers wire it into their driver. |
 | `tools` | string[] | `[]` | SDK reads | Empty strings are filtered. Duplicate names collapse (last wins at load). |
