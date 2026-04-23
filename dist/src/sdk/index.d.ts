@@ -7,7 +7,7 @@
  * `.genie/wishes/rlmx-sdk-upgrade/WISH.md`.
  */
 export { ALL_AGENT_EVENT_TYPES, WISH_SPEC_EVENT_TYPES, isAgentEvent, iso, makeEvent, } from "./events.js";
-export type { AgentEvent, AgentEventType, AgentStartEvent, EmitDoneEvent, ErrorEvent, IterationOutputEvent, IterationStartEvent, MessageEvent, RecurseEvent, SessionCloseEvent, SessionCloseReason, SessionOpenEvent, ToolCallAfterEvent, ToolCallBeforeEvent, ValidationEvent, } from "./events.js";
+export type { AgentEvent, AgentEventType, AgentStartEvent, EmitDoneEvent, ErrorEvent, IterationOutputEvent, IterationStartEvent, MessageEvent, RecurseEvent, SessionCloseEvent, SessionCloseReason, SessionOpenEvent, ToolCallAfterEvent, ToolCallBeforeEvent, ToolCallObservationEvent, ToolCallObservationStatus, ValidationEvent, } from "./events.js";
 export { createEmitter } from "./emitter.js";
 export type { EmitterAndStream, EventEmitter, EventStream, } from "./emitter.js";
 export { createFileSessionStore, isSessionState, pauseAgent, resumeAgent, } from "./session.js";

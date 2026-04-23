@@ -15,6 +15,7 @@ export const ALL_AGENT_EVENT_TYPES = [
     "Error",
     "SessionOpen",
     "SessionClose",
+    "ToolCallObservation",
 ];
 /** The 10 wish-spec event types. Session lifecycle types (SessionOpen /
  *  SessionClose) arrive in Group 2 as additions — `ALL_AGENT_EVENT_TYPES`

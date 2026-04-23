@@ -49,6 +49,26 @@ export type IterationStep = {
     readonly tool: string;
     readonly args: unknown;
 } | {
+    /**
+     * Observation of a tool call whose dispatch happened elsewhere
+     * — e.g. inside a wrapped agent framework (pi-agent, LangChain).
+     * runAgent emits a `ToolCallObservation` event with the carried
+     * payload and does NOT invoke the permission chain or the tool
+     * registry. Consumers that want observation-based policy should
+     * subscribe to the event. See `events.ts`
+     * `ToolCallObservationEvent`.
+     */
+    readonly kind: "tool_call_observation";
+    readonly tool: string;
+    readonly args: unknown;
+    readonly status: "started" | "completed" | "failed";
+    readonly result?: unknown;
+    readonly error?: {
+        readonly name: string;
+        readonly message: string;
+    };
+    readonly durationMs?: number;
+} | {
     readonly kind: "emit_done";
     readonly payload: unknown;
 } | {
