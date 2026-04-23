@@ -173,3 +173,23 @@ For full end-to-end coverage with the event stream + permission chain
 + session checkpoint, pass the registry to `runAgent({ toolRegistry })`
 and drive with a canned `IterationDriver`. See
 [`examples/`](../examples/) for runnable walk-throughs.
+
+## Production reference — `khal-os/brain`
+
+The `examples/brain-triage/` directory in this repo demonstrates the
+Python-plugin pattern in minimal form. For a full production
+implementation of the pattern across three bridged agents, see
+`khal-os/brain`:
+
+| agent | folder | tools registered |
+|---|---|---|
+| L1 triage | `.agents/triage/` | `read`, `emit_done` |
+| L2 preservation | `.agents/preservation/` | `brain_list`, `brain_get`, `brain_search`, `validate`, `read_window`, `brain_write`, `brain_propose`, `emit_done` |
+| L3 audit | `.agents/audit/` | sampled audit subset |
+
+Each folder carries the same `agent.yaml` + `SYSTEM.md` +
+`VALIDATE.md` shape this repo documents. The bridge driver
+(`src/agent/rlmx-bridge.ts` in brain) wraps each agent's existing
+pi-agent loop as one outer iteration of `runAgent()`, preserving
+retry / validate / stop-reason semantics exactly while gaining
+SDK-level events, permissions, and session checkpointing.

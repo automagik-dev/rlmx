@@ -102,6 +102,50 @@ Public entry: `import { sdk } from "@automagik/rlmx"`.
 - You're authoring tests that exercise agent behaviour without a live
   LLM (canned `IterationDriver`).
 
+## Real consumers
+
+The SDK's first production consumer is `khal-os/brain`, which wires
+three bridge drivers (L1 triage, L2 preservation, L3 audit) into
+`sdk.runAgent()`. As of 2026-04-22:
+
+- **L1 triage** — a `single-step` agent routed through
+  `sdk.runAgent()` shows **30/30** match vs the legacy pi-ai path
+  over a 30-window multimodal slate. First dogfood ship of the SDK
+  foundation.
+- **L2 preservation** — a `loop` agent with brain-mutation tools
+  (`brain_search`, `brain_get`, `brain_write`, `brain_propose`,
+  `validate`) shipped **at the measured variance ceiling** on a
+  24-window slate. Baseline×baseline and baseline×bridge match rates
+  are statistically indistinguishable, which is the cleanest
+  possible SHIP signal for bridge fidelity.
+- **L3 audit** — sampled self-audit bridge shipping in a separate
+  slice; same `IterationDriver`-wrapper pattern.
+
+Brain's bridge lives at `src/agent/rlmx-bridge.ts` — a 400-line
+adapter that wraps the legacy pi-agent loop as a single outer
+iteration of `sdk.runAgent()`. Consumers migrating an existing
+agent to the SDK can use it as a reference: the approach preserves
+the underlying loop's retry / validation / stop-reason semantics
+exactly and lets the SDK wire events, permissions, and session
+checkpointing around it without rewriting internals.
+
+Evidence artefacts (metadata only; the brain repo is
+Stéfani-private and its conversation data never leaves that repo):
+
+- `brain-lab/rlmx-sdk-bridge-report/<YYYY-MM-DD>/SHIP-decision.md`
+- `brain-lab/rlmx-sdk-bridge-report-l2/<YYYY-MM-DD>/report.md`
+
+These ship as shape (match rate, stop-reason distribution, cost and
+latency deltas) without any per-window content.
+
+## Schema stability
+
+`schema_version: 1` and `tools_api: 1` are the only fields the SDK
+has ever shipped. Both are production-validated across three
+consumer bridges. Future bumps will introduce parallel versions
+before deprecating v1 — existing bridges will keep loading without
+change.
+
 ## Further reading
 
 - [`docs/events.md`](./events.md) — the 12-event catalogue + usage.
@@ -110,4 +154,5 @@ Public entry: `import { sdk } from "@automagik/rlmx"`.
 - [`docs/agent-yaml-schema.md`](./agent-yaml-schema.md) — the
   `agent.yaml` reference.
 - [`examples/`](../examples/) — three runnable example agents with
-  smoke tests.
+  smoke tests. See also the production example in khal-os/brain's
+  `.agents/{triage,preservation,audit}/` directories.
