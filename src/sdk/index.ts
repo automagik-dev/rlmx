@@ -82,12 +82,16 @@ export type {
 	IterationDriver,
 	IterationRequest,
 	IterationStep,
+	ToolCallOutcome,
 	ToolResolver,
 } from "./agent.js";
 
-// ─── rlmDriver (G2c — real LLM bridge) ───────────────────────────
+// ─── rlmDriver (G2c — real LLM bridge + rlmx#78 tool dispatch) ───
 export { formatRlmPrompt, rlmDriver } from "./rlm-driver.js";
-export type { RlmDriverConfig } from "./rlm-driver.js";
+export type {
+	RlmDriverConfig,
+	RlmDriverToolsConfig,
+} from "./rlm-driver.js";
 
 // ─── Agent spec + tool plugin loader (G3a) ───────────────────────
 export {
@@ -101,7 +105,7 @@ export {
 	toolRegistryAsResolver,
 	UnknownToolError,
 } from "./tool-registry.js";
-export type { ToolContext, ToolHandler, ToolRegistry } from "./tool-registry.js";
+export type { ToolContext, ToolHandler, ToolRegistry, ToolSchema } from "./tool-registry.js";
 export {
 	InvalidPluginError,
 	MissingPluginError,
