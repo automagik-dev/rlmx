@@ -1,45 +1,106 @@
 /**
- * rlm-driver — Wish B Group 2b/c.
+ * rlm-driver — Wish B Group 2b/c + rlmx#78.
  *
- * Adapts the rlmx LLM backend (`llmCompleteSimple` from `src/llm.ts`)
- * to the `IterationDriver` contract defined in `src/sdk/agent.ts`.
- * Lets `runAgent()` drive a real LLM end-to-end so permissions,
- * validate, session, and events tick through with production-shaped
- * responses instead of canned fixtures.
+ * Adapts the rlmx LLM backend to the `IterationDriver` contract
+ * defined in `src/sdk/agent.ts`. Two modes:
+ *
+ *   1. **Legacy one-shot mode** (no `tools` config) — the original
+ *      behavior: one `llmCompleteSimple` call per iteration, whole
+ *      response surfaced as `emit_done.payload.answer`. Preserved
+ *      byte-compatibly so existing consumers (cli cutover, simple
+ *      agents without tools) keep working.
+ *
+ *   2. **Tool-dispatch mode** (rlmx#78, `tools` config present) —
+ *      multi-turn conversation loop with native function-calling:
+ *
+ *        • ToolRegistry schemas → pi-ai `Tool[]` → provider-native
+ *          function declarations (Gemini functionDeclarations,
+ *          Anthropic tools, OpenAI functions — pi-ai handles the
+ *          per-provider shape).
+ *        • Each LLM call is followed by a check for `ToolCall`
+ *          content blocks; any that are present are yielded as
+ *          `tool_call` steps, their outcomes come back via
+ *          `yield`'s return value (runAgent manual-iterates), and
+ *          we append a `toolResult` message to the pi-ai history
+ *          before the next call.
+ *        • Loop terminates when the LLM emits a pure-text
+ *          response (stopReason === "stop") OR an explicit
+ *          `emit_done` tool call OR the max-tool-iterations cap
+ *          is hit.
+ *        • runAgent's permission chain, validate retry pipeline,
+ *          session/checkpoint primitives all continue to fire —
+ *          the driver stays hermetic and the event flow is
+ *          identical to the G2b contract.
  *
  * Design constraints:
  *
  *   • Zero touch to `src/rlm.ts` — the existing CLI entry (`rlmLoop`)
  *     stays byte-for-byte unchanged. This module is additive.
- *   • Shares the same LLM transport (`llmCompleteSimple`) rlm.ts uses,
- *     so any provider / thinking-level / budget work that lands in
+ *   • Legacy path still shares `llmCompleteSimple` with rlm.ts, so
+ *     any provider / thinking-level / budget work that lands in
  *     `llm.ts` automatically benefits this driver.
- *   • Keeps the surface minimal: one LLM call per iteration, full
- *     response surfaced as a `Message` event, terminal `emit_done`
- *     with the response as payload. Parsing `rlmx`-specific Python
- *     tool-call code blocks is deliberately NOT done here — that's a
- *     larger slice that also requires a REPL executor. This driver
- *     proves the wiring; a follow-up can layer tool dispatch on top.
+ *   • Tool-dispatch path calls pi-ai `completeSimple` directly —
+ *     the tool-aware plumbing (Context.tools, ToolResultMessage,
+ *     preserving AssistantMessage across turns) is inherent to
+ *     pi-ai's transport layer, so we bypass the legacy `llm.ts`
+ *     wrapper rather than bolt tool support on there.
+ *   • Python REPL tool-call parsing (rlmx-specific ```tool_call``` code
+ *     blocks) is still NOT done here — that's the rlm.ts CLI's
+ *     concern and a separate slice. This driver does NATIVE
+ *     function-calling only, which is what Tier 2 brain-consuming
+ *     agents need.
  *
- * Consumers compose it via `runAgent({ driver: rlmDriver(cfg) })` —
- * never called directly by user code.
+ * Consumers compose it via `runAgent({ driver: rlmDriver(cfg),
+ * toolRegistry: registry })` — never called directly by user code.
  *
  * Spec: `.genie/wishes/rlmx-sdk-upgrade/WISH.md` L93 (wave 5
  * dogfood), plus the "prove end-to-end wiring against real LLM"
- * mandate added in the G2b review cycle.
+ * mandate added in the G2b review cycle; rlmx#78 for the native
+ * tool-dispatch loop that unblocks Tier 2 agents.
  */
+import type { AssistantMessage as PiAssistantMessage, Context as PiContext } from "@mariozechner/pi-ai";
 import type { ModelConfig } from "../config.js";
 import { type LLMResponse } from "../llm.js";
 import type { IterationDriver, IterationRequest } from "./agent.js";
+import type { ToolRegistry } from "./tool-registry.js";
+/**
+ * Tool-dispatch config for rlmx#78. When present on `RlmDriverConfig`,
+ * the driver enters multi-turn tool-dispatch mode.
+ */
+export interface RlmDriverToolsConfig {
+    /** Source of tool schemas the LLM will be offered. Must have at
+     *  least one tool with a schema (via `registry.register(name,
+     *  handler, schema)`) — otherwise the driver falls back to
+     *  one-shot mode for safety. */
+    readonly registry: ToolRegistry;
+    /**
+     * Hard cap on LLM calls per iteration (defense against infinite
+     * tool-calling loops). When exceeded, the driver yields an
+     * `error` step with the partial answer. Default: 16.
+     */
+    readonly maxToolIterations?: number;
+    /**
+     * Optional list of tool names to expose to the LLM. When
+     * omitted, every registry tool with a schema is exposed. Useful
+     * when the agent.yaml whitelist is stricter than the registry
+     * (e.g. RTK pre-registered tools you don't want this agent to
+     * see). Order is preserved in the tools[] array.
+     */
+    readonly expose?: readonly string[];
+}
 export interface RlmDriverConfig {
     /** Model config — same shape rlm.ts uses. */
     readonly model: ModelConfig;
     /** Optional SYSTEM.md contents; prepended to each turn's prompt. */
     readonly system?: string;
     /**
-     * Injectable LLM completion fn. Defaults to the real
-     * `llmCompleteSimple` so production just calls Gemini. Tests pass a
-     * mock to validate the driver's event sequence without a live model.
+     * Injectable LLM completion fn for the legacy (no-tools) path.
+     * Defaults to the real `llmCompleteSimple` so production just
+     * calls Gemini. Tests pass a mock to validate the driver's event
+     * sequence without a live model. Ignored when `tools` is set —
+     * the tool-dispatch path needs pi-ai's native `completeSimple`
+     * for tool-aware transport, and exposes a separate `toolsLlm`
+     * injection point for tests.
      */
     readonly llm?: (prompt: string, modelConfig: ModelConfig, signal?: AbortSignal) => Promise<LLMResponse>;
     /**
@@ -49,6 +110,18 @@ export interface RlmDriverConfig {
      * labelled block.
      */
     readonly retryHintFormatter?: (hint: string) => string;
+    /**
+     * Tool-dispatch config (rlmx#78). When set, switches the driver
+     * into multi-turn native-function-calling mode.
+     */
+    readonly tools?: RlmDriverToolsConfig;
+    /**
+     * Injectable pi-ai completion fn for the tool-dispatch path.
+     * Defaults to the real `completeSimple` so production just calls
+     * Gemini / Anthropic / OpenAI with native function-calling. Tests
+     * pass a mock to validate the tool loop without a live model.
+     */
+    readonly toolsLlm?: (context: PiContext, modelConfig: ModelConfig, signal?: AbortSignal) => Promise<PiAssistantMessage>;
 }
 /**
  * Render the iteration's prompt. Keeps it intentionally simple — the
@@ -59,14 +132,9 @@ export interface RlmDriverConfig {
  */
 export declare function formatRlmPrompt(config: RlmDriverConfig, req: IterationRequest): string;
 /**
- * Build an `IterationDriver` that drives one LLM call per iteration.
- * The returned async generator yields a single `message` step with the
- * full response text followed by an `emit_done` step carrying the
- * response as a structured payload: `{ answer: string; usage: UsageStats }`.
- *
- * When the LLM fails (throws, or returns an empty string), the driver
- * yields an `error` step so `runAgent` can surface it as `Error{phase:"driver"}`
- * and close the session with `reason: "error"`.
+ * Build an `IterationDriver` that drives the LLM. Legacy one-shot
+ * mode when `tools` is absent; multi-turn tool-dispatch mode (rlmx#78)
+ * when `tools` is present and the registry has at least one schema.
  */
 export declare function rlmDriver(config: RlmDriverConfig): IterationDriver;
 //# sourceMappingURL=rlm-driver.d.ts.map

@@ -39,6 +39,26 @@ import type { ToolRegistry } from "./tool-registry.js";
 import { type PermissionHook } from "./permissions.js";
 import { type BudgetSnapshot, type HistoryTurn, type SessionStore } from "./session.js";
 import { type ValidateSchema } from "./validate.js";
+/**
+ * Outcome of a tool_call dispatch, fed back to the driver via
+ * `AsyncGenerator.next(outcome)` so multi-turn drivers (rlmDriver
+ * in tool-dispatch mode, rlmx#78) can fold the result into the
+ * next LLM call as conversation history.
+ */
+export interface ToolCallOutcome {
+    readonly tool: string;
+    readonly ok: boolean;
+    readonly result: unknown;
+    readonly error?: {
+        readonly name: string;
+        readonly message: string;
+    };
+    readonly durationMs: number;
+    /** True when the permission chain denied the call. `result` is null and
+     *  `ok` is false in this case; drivers that want to explain the denial
+     *  to the LLM should surface `error.message` as a tool-result note. */
+    readonly denied?: boolean;
+}
 /** One step produced by an `IterationDriver` during a single iteration. */
 export type IterationStep = {
     readonly kind: "message";
@@ -48,6 +68,11 @@ export type IterationStep = {
     readonly kind: "tool_call";
     readonly tool: string;
     readonly args: unknown;
+    /** Optional LLM-issued id (e.g. Gemini `functionCall.id`,
+     *  Anthropic `tool_use.id`). Drivers that need to pair
+     *  outcomes with ToolResultMessage.toolCallId should set
+     *  this so the outcome comes back correlated. */
+    readonly id?: string;
 } | {
     /**
      * Observation of a tool call whose dispatch happened elsewhere
@@ -83,7 +108,21 @@ export interface IterationRequest {
      *  driver should prepend this to its next model turn. */
     readonly retryHint?: string;
 }
-export type IterationDriver = (req: IterationRequest, signal: AbortSignal) => AsyncIterable<IterationStep>;
+/**
+ * An `IterationDriver` is an async generator that runAgent pumps.
+ *
+ * runAgent uses manual iteration (`iter.next(value)`) so drivers can
+ * receive tool-call outcomes back from runAgent — the generator's
+ * `yield` returns the `ToolCallOutcome` when the previously yielded
+ * step was a `tool_call` and runAgent finished dispatching it. For
+ * any other step kind (message, emit_done, error,
+ * tool_call_observation) the yield returns `undefined`.
+ *
+ * Drivers that don't care about tool outcomes (e.g. the legacy
+ * one-shot rlmDriver path) can just `yield step` and ignore the
+ * return value — behavior is unchanged from the pre-rlmx#78 contract.
+ */
+export type IterationDriver = (req: IterationRequest, signal: AbortSignal) => AsyncIterable<IterationStep> | AsyncGenerator<IterationStep, void, ToolCallOutcome | undefined>;
 /** Resolves a tool invocation. Called after a non-deny permission
  *  decision. When omitted, tool calls are recorded but not executed
  *  (the `ToolCallAfter.result` is `null`). */
