@@ -11,24 +11,46 @@ declare const Client: typeof import("pg").Client;
  * Compute adaptive chunk size based on provider limits and storage config.
  */
 export declare function getChunkSize(provider: string, config: StorageConfig): number;
-/**
- * PgStorage manages an embedded pgserve instance for large context handling.
- */
 export declare class PgStorage {
     private process;
     private client;
     private port;
     private stopping;
     private cleanupRegistered;
+    /**
+     * Absolute path to the `.rlmx-server.json` sidecar this instance wrote. Set
+     * only when we spawned pgserve (owner mode) so `stop()` can clean it up.
+     * Null when we attached to an existing instance (no ownership = no cleanup).
+     */
+    private sidecarPath;
+    /** True when we connected to an existing pgserve via sidecar instead of spawning. */
+    private attached;
     /** Connection string for the running pgserve instance */
     get connectionString(): string;
     /** Get the underlying pg Client (for observability recorder). */
     getClient(): InstanceType<typeof Client> | null;
     /**
-     * Start pgserve and connect to it.
+     * Start pgserve and connect to it. For persistent-mode dataDirs where
+     * another PgStorage instance already spawned pgserve (discovered via
+     * `.rlmx-server.json` sidecar), we attach as a second client instead of
+     * trying to spawn a conflicting postmaster — postgres single-writer
+     * semantics mean a second spawn on the same dataDir always fails with
+     * "pre-existing shared memory block". Attaching lets `rlmx stats`,
+     * `rlmx` query runs, and long-running SDK pipelines coexist cleanly.
+     *
      * Returns the connection string once ready.
      */
     start(config: StorageConfig): Promise<string>;
+    /**
+     * Try to attach to an existing pgserve advertised by
+     * `{dataDir}/.rlmx-server.json`. Returns the connection string on success,
+     * null to tell the caller to proceed with a normal spawn. Silent on every
+     * failure path — stale sidecars, dead PIDs, and unreachable servers all
+     * fall back to spawning.
+     */
+    private tryAttachFromSidecar;
+    /** Write the server-info sidecar advertising our pgserve to future callers. */
+    private writeSidecar;
     /**
      * Ingest a loaded context into the records table.
      * For JSONL: parses each line as JSON, extracts timestamp/type fields.
@@ -68,6 +90,10 @@ export declare class PgStorage {
     query(sql: string, params?: unknown[]): Promise<unknown[]>;
     /**
      * Stop pgserve: graceful 3s timeout, then SIGKILL.
+     *
+     * When this instance attached to an existing pgserve (via sidecar), only
+     * the pg client is closed — the pgserve process belongs to someone else
+     * and must not be killed.
      */
     stop(): Promise<void>;
     /** Find the pgserve CLI binary in node_modules */

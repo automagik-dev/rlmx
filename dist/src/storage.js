@@ -9,7 +9,7 @@ import { createServer } from "node:net";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import pg from "pg";
 import { PROVIDER_LIMITS } from "./cache.js";
 const { Client } = pg;
@@ -128,12 +128,22 @@ export function getChunkSize(provider, config) {
 /**
  * PgStorage manages an embedded pgserve instance for large context handling.
  */
+/** Filename for the server-info sidecar inside a persistent-mode dataDir. */
+const SERVER_SIDECAR = ".rlmx-server.json";
 export class PgStorage {
     process = null;
     client = null;
     port = 0;
     stopping = false;
     cleanupRegistered = false;
+    /**
+     * Absolute path to the `.rlmx-server.json` sidecar this instance wrote. Set
+     * only when we spawned pgserve (owner mode) so `stop()` can clean it up.
+     * Null when we attached to an existing instance (no ownership = no cleanup).
+     */
+    sidecarPath = null;
+    /** True when we connected to an existing pgserve via sidecar instead of spawning. */
+    attached = false;
     /** Connection string for the running pgserve instance */
     get connectionString() {
         return `postgresql://postgres:postgres@127.0.0.1:${this.port}/${RLMX_DB}`;
@@ -143,55 +153,170 @@ export class PgStorage {
         return this.client;
     }
     /**
-     * Start pgserve and connect to it.
+     * Start pgserve and connect to it. For persistent-mode dataDirs where
+     * another PgStorage instance already spawned pgserve (discovered via
+     * `.rlmx-server.json` sidecar), we attach as a second client instead of
+     * trying to spawn a conflicting postmaster — postgres single-writer
+     * semantics mean a second spawn on the same dataDir always fails with
+     * "pre-existing shared memory block". Attaching lets `rlmx stats`,
+     * `rlmx` query runs, and long-running SDK pipelines coexist cleanly.
+     *
      * Returns the connection string once ready.
      */
     async start(config) {
+        // Attempt sidecar attach first (persistent mode only — memory mode
+        // is ephemeral per-process, no coordination needed).
+        if (config.mode === "persistent") {
+            const attached = await this.tryAttachFromSidecar(config);
+            if (attached)
+                return attached;
+        }
         // Resolve pgserve binary path
         const pgserveBin = this.findPgserveBin();
-        // Build CLI args
-        const args = [];
-        // Port: 0 means auto-assign a free port; otherwise use the specified port
-        const requestedPort = config.port === 0 ? await findFreePort() : config.port;
-        args.push("--port", String(requestedPort));
-        // Mode: persistent uses dataDir, memory uses temp
-        if (config.mode === "persistent") {
-            const dataDir = expandHome(config.dataDir);
-            mkdirSync(dataDir, { recursive: true });
-            args.push("--data", dataDir);
+        // Spawn with port-collision retry. findFreePort picks an available
+        // port, but between "kernel assigned port N" and "pgserve bound port
+        // N" there's a race window where another process can steal N. If
+        // config.port is 0 (auto-assign), retry up to 3 times with fresh
+        // ports. If the caller pinned a port (config.port != 0), don't retry
+        // — a pinned conflict is a real configuration error.
+        const maxAttempts = config.port === 0 ? 3 : 1;
+        let lastErr = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const requestedPort = config.port === 0 ? await findFreePort() : config.port;
+            const args = [];
+            args.push("--port", String(requestedPort));
+            if (config.mode === "persistent") {
+                const dataDir = expandHome(config.dataDir);
+                mkdirSync(dataDir, { recursive: true });
+                args.push("--data", dataDir);
+            }
+            // memory mode: no --data flag = in-memory (pgserve default)
+            args.push("--log", "error");
+            args.push("--no-cluster");
+            args.push("--no-stats");
+            this.process = spawn(pgserveBin, args, {
+                stdio: ["ignore", "pipe", "pipe"],
+                detached: false,
+            });
+            // Drain stdio so the 64KB pipe buffers never fill — during WAL
+            // recovery of existing persistent-mode data, postgres writes
+            // kilobytes of startup logs to stderr. If those pipes aren't
+            // drained, the child blocks on write() and exits -2 before the
+            // TCP listener comes up (bug #80).
+            this.process.stdout?.on("data", () => { });
+            this.process.stderr?.on("data", () => { });
+            if (!this.cleanupRegistered) {
+                this.registerCleanup();
+                this.cleanupRegistered = true;
+            }
+            this.port = requestedPort;
+            try {
+                await this.waitForReady();
+                lastErr = null;
+                break; // success — proceed to connect+schema
+            }
+            catch (err) {
+                lastErr = err instanceof Error ? err : new Error(String(err));
+                // Clean the failed child so the next attempt starts from a known state
+                try {
+                    this.process.kill("SIGKILL");
+                }
+                catch { /* may already be dead */ }
+                this.process = null;
+                this.port = 0;
+                if (attempt === maxAttempts)
+                    throw lastErr;
+                // small backoff so stdio/shmem can settle before the next attempt
+                await new Promise((r) => setTimeout(r, 250));
+            }
         }
-        // memory mode: no --data flag = in-memory (pgserve default)
-        // Quiet output for embedded use
-        args.push("--log", "error");
-        args.push("--no-cluster");
-        args.push("--no-stats");
-        // Spawn pgserve
-        this.process = spawn(pgserveBin, args, {
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: false,
-        });
-        // Drain stdio so the 64KB pipe buffers never fill — during WAL
-        // recovery of existing persistent-mode data, postgres writes
-        // kilobytes of startup logs to stderr. If those pipes aren't
-        // drained, the child blocks on write() and exits -2 before the
-        // TCP listener comes up (bug #80). Events are consumed and
-        // discarded; callers get exit code and error via waitForReady.
-        this.process.stdout?.on("data", () => { });
-        this.process.stderr?.on("data", () => { });
-        // Register cleanup handlers (only once per process)
-        if (!this.cleanupRegistered) {
-            this.registerCleanup();
-            this.cleanupRegistered = true;
-        }
-        // Wait for pgserve to be ready by polling for connection
-        this.port = requestedPort;
-        await this.waitForReady();
         // Connect pg client and create schema
         this.client = new Client({ connectionString: this.connectionString });
         await this.client.connect();
         await this.client.query(SCHEMA_DDL);
         await this.client.query(OBSERVABILITY_DDL);
+        // Publish server-info sidecar so other consumers on this dataDir can
+        // attach instead of fighting over postmaster.pid + shmem. Only writes
+        // for persistent mode — memory mode is per-process and non-sharable.
+        if (config.mode === "persistent") {
+            this.writeSidecar(expandHome(config.dataDir));
+        }
         return this.connectionString;
+    }
+    /**
+     * Try to attach to an existing pgserve advertised by
+     * `{dataDir}/.rlmx-server.json`. Returns the connection string on success,
+     * null to tell the caller to proceed with a normal spawn. Silent on every
+     * failure path — stale sidecars, dead PIDs, and unreachable servers all
+     * fall back to spawning.
+     */
+    async tryAttachFromSidecar(config) {
+        const dataDir = expandHome(config.dataDir);
+        const sidecarPath = join(dataDir, SERVER_SIDECAR);
+        if (!existsSync(sidecarPath))
+            return null;
+        let info;
+        try {
+            info = JSON.parse(readFileSync(sidecarPath, "utf-8"));
+        }
+        catch {
+            // corrupted sidecar — purge and fall back to spawn
+            try {
+                unlinkSync(sidecarPath);
+            }
+            catch { /* race */ }
+            return null;
+        }
+        if (!info.port || !info.pid)
+            return null;
+        // PID check — if the owner is dead, the sidecar is stale.
+        try {
+            process.kill(info.pid, 0);
+        }
+        catch {
+            try {
+                unlinkSync(sidecarPath);
+            }
+            catch { /* race */ }
+            return null;
+        }
+        // Open a client against the advertised port. If TCP handshake fails
+        // (pgserve dying but sidecar not yet removed), fall back to spawn.
+        this.port = info.port;
+        const client = new Client({ connectionString: this.connectionString });
+        try {
+            await client.connect();
+            await client.query("SELECT 1");
+        }
+        catch {
+            this.port = 0;
+            try {
+                await client.end();
+            }
+            catch { /* noop */ }
+            return null;
+        }
+        this.client = client;
+        this.attached = true;
+        // Do NOT write the sidecar or register process cleanup — we don't own
+        // the pgserve child. `stop()` just closes our client.
+        return this.connectionString;
+    }
+    /** Write the server-info sidecar advertising our pgserve to future callers. */
+    writeSidecar(dataDir) {
+        const path = join(dataDir, SERVER_SIDECAR);
+        const payload = {
+            port: this.port,
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+        };
+        try {
+            writeFileSync(path, JSON.stringify(payload, null, 2) + "\n", "utf-8");
+            this.sidecarPath = path;
+        }
+        catch {
+            // advisory — attachment is a nice-to-have, not a hard requirement
+        }
     }
     /**
      * Ingest a loaded context into the records table.
@@ -319,12 +444,16 @@ export class PgStorage {
     }
     /**
      * Stop pgserve: graceful 3s timeout, then SIGKILL.
+     *
+     * When this instance attached to an existing pgserve (via sidecar), only
+     * the pg client is closed — the pgserve process belongs to someone else
+     * and must not be killed.
      */
     async stop() {
         if (this.stopping)
             return;
         this.stopping = true;
-        // Close pg client
+        // Close pg client (always — whether owner or attached)
         if (this.client) {
             try {
                 await this.client.end();
@@ -334,7 +463,7 @@ export class PgStorage {
             }
             this.client = null;
         }
-        // Kill pgserve process
+        // Kill pgserve process — ONLY if we spawned it (not attached mode).
         const proc = this.process;
         if (proc && proc.pid && !proc.killed) {
             await new Promise((resolve) => {
@@ -360,7 +489,18 @@ export class PgStorage {
                 }
             });
         }
+        // Clean up the server-info sidecar so stale entries don't mislead the
+        // next caller. Only the owner removes it; attached instances leave it
+        // alone (the owner is still running).
+        if (this.sidecarPath) {
+            try {
+                unlinkSync(this.sidecarPath);
+            }
+            catch { /* may already be gone */ }
+            this.sidecarPath = null;
+        }
         this.process = null;
+        this.attached = false;
         this.stopping = false;
     }
     // ─── Private helpers ──────────────────────────────────────
@@ -418,6 +558,16 @@ export class PgStorage {
     /** Register process exit handlers for cleanup */
     registerCleanup() {
         const cleanup = () => {
+            // Remove the server-info sidecar FIRST so another process that wakes
+            // up right after us doesn't try to attach to a server we're about to
+            // kill. Best-effort — any failure here is inconsequential.
+            if (this.sidecarPath) {
+                try {
+                    unlinkSync(this.sidecarPath);
+                }
+                catch { /* gone already */ }
+                this.sidecarPath = null;
+            }
             if (this.process && this.process.pid && !this.process.killed) {
                 try {
                     this.process.kill("SIGKILL");
