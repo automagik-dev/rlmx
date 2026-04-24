@@ -244,45 +244,85 @@ export class PgStorage {
         return this.connectionString;
     }
     /**
-     * Try to attach to an existing pgserve advertised by
-     * `{dataDir}/.rlmx-server.json`. Returns the connection string on success,
-     * null to tell the caller to proceed with a normal spawn. Silent on every
-     * failure path — stale sidecars, dead PIDs, and unreachable servers all
-     * fall back to spawning.
+     * Try to attach to an existing pgserve on this dataDir. Three levels of
+     * discovery, in order:
+     *
+     *   1. `.rlmx-server.json` sidecar (the happy path — spawner writes it
+     *      after `waitForReady`, cleans it on stop).
+     *   2. `postmaster.pid` fallback (postgres's own lockfile — present even
+     *      if the rlmx sidecar was never written or got unlinked before the
+     *      pg process exited, e.g. orphaned pgserve after a crash).
+     *
+     * Returns the connection string on success, null to tell the caller to
+     * proceed with a normal spawn. Silent on every failure path.
      */
     async tryAttachFromSidecar(config) {
         const dataDir = expandHome(config.dataDir);
+        // Level 1: rlmx sidecar
         const sidecarPath = join(dataDir, SERVER_SIDECAR);
-        if (!existsSync(sidecarPath))
-            return null;
-        let info;
-        try {
-            info = JSON.parse(readFileSync(sidecarPath, "utf-8"));
-        }
-        catch {
-            // corrupted sidecar — purge and fall back to spawn
+        if (existsSync(sidecarPath)) {
+            let info = null;
             try {
-                unlinkSync(sidecarPath);
+                info = JSON.parse(readFileSync(sidecarPath, "utf-8"));
             }
-            catch { /* race */ }
-            return null;
+            catch {
+                try {
+                    unlinkSync(sidecarPath);
+                }
+                catch { /* race */ }
+            }
+            if (info && info.port && info.pid) {
+                const alive = (() => {
+                    try {
+                        process.kill(info.pid, 0);
+                        return true;
+                    }
+                    catch {
+                        return false;
+                    }
+                })();
+                if (!alive) {
+                    try {
+                        unlinkSync(sidecarPath);
+                    }
+                    catch { /* race */ }
+                }
+                else {
+                    const connected = await this.tryConnectAt(info.port);
+                    if (connected)
+                        return this.connectionString;
+                }
+            }
         }
-        if (!info.port || !info.pid)
-            return null;
-        // PID check — if the owner is dead, the sidecar is stale.
-        try {
-            process.kill(info.pid, 0);
-        }
-        catch {
+        // Level 2: postmaster.pid fallback — postgres writes this before our
+        // sidecar even exists, and keeps it while alive. Format (7 lines):
+        //   pid / dataDir / startEpoch / port / socketPath / listenAddr / shmem / status
+        // We just need the pid (line 1) and port (line 4).
+        const postmasterPid = join(dataDir, "postmaster.pid");
+        if (existsSync(postmasterPid)) {
             try {
-                unlinkSync(sidecarPath);
+                const lines = readFileSync(postmasterPid, "utf-8").split("\n");
+                const pid = parseInt(lines[0]?.trim() ?? "", 10);
+                const port = parseInt(lines[3]?.trim() ?? "", 10);
+                if (pid > 0 && port > 0) {
+                    try {
+                        process.kill(pid, 0);
+                    }
+                    catch {
+                        return null;
+                    }
+                    const connected = await this.tryConnectAt(port);
+                    if (connected)
+                        return this.connectionString;
+                }
             }
-            catch { /* race */ }
-            return null;
+            catch { /* unparseable — fall through to spawn */ }
         }
-        // Open a client against the advertised port. If TCP handshake fails
-        // (pgserve dying but sidecar not yet removed), fall back to spawn.
-        this.port = info.port;
+        return null;
+    }
+    /** Open a client at the given port; returns true and retains client on success. */
+    async tryConnectAt(port) {
+        this.port = port;
         const client = new Client({ connectionString: this.connectionString });
         try {
             await client.connect();
@@ -294,13 +334,11 @@ export class PgStorage {
                 await client.end();
             }
             catch { /* noop */ }
-            return null;
+            return false;
         }
         this.client = client;
         this.attached = true;
-        // Do NOT write the sidecar or register process cleanup — we don't own
-        // the pgserve child. `stop()` just closes our client.
-        return this.connectionString;
+        return true;
     }
     /** Write the server-info sidecar advertising our pgserve to future callers. */
     writeSidecar(dataDir) {
