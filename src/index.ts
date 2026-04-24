@@ -25,6 +25,13 @@ export type { PackageAvailability, PythonVersionInfo } from "./detect.js";
 export { BudgetTracker } from "./budget.js";
 export type { BudgetState } from "./budget.js";
 
+// ─── Observability (so SDK consumers can populate rlmx_sessions/events) ─
+export { PgStorage } from "./storage.js";
+export type { StorageConfig } from "./config.js";
+export { DEFAULT_STORAGE_CONFIG } from "./config.js";
+export { ObservabilityRecorder } from "./observe.js";
+export type { LLMCallUsage, TotalUsage } from "./observe.js";
+
 export { rlmLoop } from "./rlm.js";
 export type { RLMOptions } from "./rlm.js";
 

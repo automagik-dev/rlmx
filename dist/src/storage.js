@@ -170,6 +170,14 @@ export class PgStorage {
             stdio: ["ignore", "pipe", "pipe"],
             detached: false,
         });
+        // Drain stdio so the 64KB pipe buffers never fill — during WAL
+        // recovery of existing persistent-mode data, postgres writes
+        // kilobytes of startup logs to stderr. If those pipes aren't
+        // drained, the child blocks on write() and exits -2 before the
+        // TCP listener comes up (bug #80). Events are consumed and
+        // discarded; callers get exit code and error via waitForReady.
+        this.process.stdout?.on("data", () => { });
+        this.process.stderr?.on("data", () => { });
         // Register cleanup handlers (only once per process)
         if (!this.cleanupRegistered) {
             this.registerCleanup();

@@ -22,6 +22,13 @@ export interface TotalUsage {
 export declare class ObservabilityRecorder {
     private storage;
     private sessionId;
+    /**
+     * Serialization queue for pg client calls. ObservabilityRecorder uses a
+     * single shared pg.Client (not a Pool), and pg@>=8 crashes the connection
+     * when queries overlap. We chain every write through this tail so they
+     * execute strictly in order regardless of how fast callers fire them.
+     */
+    private writeQueue;
     constructor(storage: PgStorage);
     /**
      * Create a new session record.
@@ -48,8 +55,16 @@ export declare class ObservabilityRecorder {
      */
     recordError(errorMessage: string): void;
     /**
-     * Fire-and-forget: run an async operation, swallow errors.
+     * Fire-and-forget: enqueue an async operation onto the write queue so
+     * the shared pg.Client processes one write at a time. Errors are
+     * logged to stderr but never thrown and never abort the chain.
      */
     private fire;
+    /**
+     * Wait for all pending observability writes to flush. Callers should
+     * await this before closing the session / shutting down pgserve so the
+     * final recordings make it to disk.
+     */
+    flush(): Promise<void>;
 }
 //# sourceMappingURL=observe.d.ts.map

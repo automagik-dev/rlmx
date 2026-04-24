@@ -5,6 +5,10 @@ export { loadContext, loadContextFromDir, loadContextFromFile, loadContextFromSt
 export { REPL } from "./repl.js";
 export { detectPackages, formatPackagePrompt, checkPythonVersion, PROBE_PACKAGES } from "./detect.js";
 export { BudgetTracker } from "./budget.js";
+// ─── Observability (so SDK consumers can populate rlmx_sessions/events) ─
+export { PgStorage } from "./storage.js";
+export { DEFAULT_STORAGE_CONFIG } from "./config.js";
+export { ObservabilityRecorder } from "./observe.js";
 export { rlmLoop } from "./rlm.js";
 export { runBatch } from "./batch.js";
 export { llmComplete, llmCompleteSimple, llmCompleteBatched, handleLLMRequest, createUsage, mergeUsage, createGeminiCallCounts, } from "./llm.js";
