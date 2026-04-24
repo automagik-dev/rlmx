@@ -26,6 +26,13 @@ export interface TotalUsage {
 export class ObservabilityRecorder {
   private storage: PgStorage;
   private sessionId: string | null = null;
+  /**
+   * Serialization queue for pg client calls. ObservabilityRecorder uses a
+   * single shared pg.Client (not a Pool), and pg@>=8 crashes the connection
+   * when queries overlap. We chain every write through this tail so they
+   * execute strictly in order regardless of how fast callers fire them.
+   */
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(storage: PgStorage) {
     this.storage = storage;
@@ -57,6 +64,10 @@ export class ObservabilityRecorder {
 
   /**
    * Record an LLM call event.
+   *
+   * Snapshots `this.sessionId` synchronously so a subsequent
+   * `startSession()` (for the next run) doesn't hijack the INSERT when
+   * the queued callback eventually executes.
    */
   recordLLMCall(
     iteration: number,
@@ -64,19 +75,22 @@ export class ObservabilityRecorder {
     model: string,
     durationMs: number
   ): void {
+    const capturedSessionId = this.sessionId;
     this.fire(async () => {
       const client = this.storage.getClient();
-      if (!client || !this.sessionId) return;
+      if (!client || !capturedSessionId) return;
       await client.query(
         `INSERT INTO rlmx_events (session_id, iteration, kind, input_tokens, output_tokens, cost, model, duration_ms)
          VALUES ($1, $2, 'llm_call', $3, $4, $5, $6, $7)`,
-        [this.sessionId, iteration, usage.inputTokens, usage.outputTokens, usage.cost, model, durationMs]
+        [capturedSessionId, iteration, usage.inputTokens, usage.outputTokens, usage.cost, model, durationMs]
       );
     });
   }
 
   /**
    * Record a REPL execution event.
+   *
+   * Snapshots `this.sessionId` synchronously (see recordLLMCall).
    */
   recordReplExec(
     iteration: number,
@@ -86,14 +100,15 @@ export class ObservabilityRecorder {
     durationMs: number,
     isError?: boolean
   ): void {
+    const capturedSessionId = this.sessionId;
     this.fire(async () => {
       const client = this.storage.getClient();
-      if (!client || !this.sessionId) return;
+      if (!client || !capturedSessionId) return;
       await client.query(
         `INSERT INTO rlmx_events (session_id, iteration, kind, code, stdout, stderr, duration_ms, is_error, error_message)
          VALUES ($1, $2, 'repl_exec', $3, $4, $5, $6, $7, $8)`,
         [
-          this.sessionId, iteration,
+          capturedSessionId, iteration,
           code.slice(0, 10000), stdout.slice(0, 10000), stderr.slice(0, 5000),
           durationMs, isError ?? false, isError ? stderr.slice(0, 1000) : null,
         ]
@@ -103,6 +118,8 @@ export class ObservabilityRecorder {
 
   /**
    * Record a sub-call event (pg_search, llm_query from REPL, etc.).
+   *
+   * Snapshots `this.sessionId` synchronously (see recordLLMCall).
    */
   recordSubCall(
     iteration: number,
@@ -112,14 +129,15 @@ export class ObservabilityRecorder {
     isError?: boolean,
     errorMessage?: string
   ): void {
+    const capturedSessionId = this.sessionId;
     this.fire(async () => {
       const client = this.storage.getClient();
-      if (!client || !this.sessionId) return;
+      if (!client || !capturedSessionId) return;
       await client.query(
         `INSERT INTO rlmx_events (session_id, iteration, kind, request_type, prompt_preview, duration_ms, is_error, error_message)
          VALUES ($1, $2, 'sub_call', $3, $4, $5, $6, $7)`,
         [
-          this.sessionId, iteration,
+          capturedSessionId, iteration,
           requestType, promptPreview.slice(0, 500),
           durationMs, isError ?? false, errorMessage?.slice(0, 1000) ?? null,
         ]
@@ -129,15 +147,23 @@ export class ObservabilityRecorder {
 
   /**
    * Record session completion with final answer and totals.
+   *
+   * Snapshots `this.sessionId` synchronously so the UPDATE targets the
+   * right row even if another `startSession()` has fired before the
+   * queued callback executes. Without this snapshot, running multiple
+   * agents in sequence caused every recordFinal to UPDATE the most
+   * recently-started session, leaving all earlier sessions stuck in
+   * status='running'.
    */
   recordFinal(
     answer: string,
     iterations: number,
     totalUsage: TotalUsage
   ): void {
+    const capturedSessionId = this.sessionId;
     this.fire(async () => {
       const client = this.storage.getClient();
-      if (!client || !this.sessionId) return;
+      if (!client || !capturedSessionId) return;
       await client.query(
         `UPDATE rlmx_sessions SET
            status = 'completed',
@@ -150,7 +176,7 @@ export class ObservabilityRecorder {
            answer_length = $7
          WHERE id = $1`,
         [
-          this.sessionId, iterations,
+          capturedSessionId, iterations,
           totalUsage.inputTokens, totalUsage.outputTokens,
           totalUsage.cachedTokens ?? 0, totalUsage.totalCost,
           answer.length,
@@ -161,26 +187,40 @@ export class ObservabilityRecorder {
 
   /**
    * Record session failure.
+   *
+   * Snapshots `this.sessionId` synchronously (see recordFinal).
    */
   recordError(errorMessage: string): void {
+    const capturedSessionId = this.sessionId;
     this.fire(async () => {
       const client = this.storage.getClient();
-      if (!client || !this.sessionId) return;
+      if (!client || !capturedSessionId) return;
       await client.query(
         `UPDATE rlmx_sessions SET status = 'failed', ended_at = now(), budget_hit = $2 WHERE id = $1`,
-        [this.sessionId, errorMessage.slice(0, 500)]
+        [capturedSessionId, errorMessage.slice(0, 500)]
       );
     });
   }
 
   /**
-   * Fire-and-forget: run an async operation, swallow errors.
+   * Fire-and-forget: enqueue an async operation onto the write queue so
+   * the shared pg.Client processes one write at a time. Errors are
+   * logged to stderr but never thrown and never abort the chain.
    */
   private fire(fn: () => Promise<void>): void {
-    fn().catch((err) => {
+    this.writeQueue = this.writeQueue.then(fn).catch((err) => {
       process.stderr.write(
         `rlmx: observability recording error: ${err instanceof Error ? err.message : String(err)}\n`
       );
     });
+  }
+
+  /**
+   * Wait for all pending observability writes to flush. Callers should
+   * await this before closing the session / shutting down pgserve so the
+   * final recordings make it to disk.
+   */
+  async flush(): Promise<void> {
+    await this.writeQueue;
   }
 }
