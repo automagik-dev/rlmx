@@ -34,27 +34,35 @@ export class ObservabilityRecorder {
     }
     /**
      * Record an LLM call event.
+     *
+     * Snapshots `this.sessionId` synchronously so a subsequent
+     * `startSession()` (for the next run) doesn't hijack the INSERT when
+     * the queued callback eventually executes.
      */
     recordLLMCall(iteration, usage, model, durationMs) {
+        const capturedSessionId = this.sessionId;
         this.fire(async () => {
             const client = this.storage.getClient();
-            if (!client || !this.sessionId)
+            if (!client || !capturedSessionId)
                 return;
             await client.query(`INSERT INTO rlmx_events (session_id, iteration, kind, input_tokens, output_tokens, cost, model, duration_ms)
-         VALUES ($1, $2, 'llm_call', $3, $4, $5, $6, $7)`, [this.sessionId, iteration, usage.inputTokens, usage.outputTokens, usage.cost, model, durationMs]);
+         VALUES ($1, $2, 'llm_call', $3, $4, $5, $6, $7)`, [capturedSessionId, iteration, usage.inputTokens, usage.outputTokens, usage.cost, model, durationMs]);
         });
     }
     /**
      * Record a REPL execution event.
+     *
+     * Snapshots `this.sessionId` synchronously (see recordLLMCall).
      */
     recordReplExec(iteration, code, stdout, stderr, durationMs, isError) {
+        const capturedSessionId = this.sessionId;
         this.fire(async () => {
             const client = this.storage.getClient();
-            if (!client || !this.sessionId)
+            if (!client || !capturedSessionId)
                 return;
             await client.query(`INSERT INTO rlmx_events (session_id, iteration, kind, code, stdout, stderr, duration_ms, is_error, error_message)
          VALUES ($1, $2, 'repl_exec', $3, $4, $5, $6, $7, $8)`, [
-                this.sessionId, iteration,
+                capturedSessionId, iteration,
                 code.slice(0, 10000), stdout.slice(0, 10000), stderr.slice(0, 5000),
                 durationMs, isError ?? false, isError ? stderr.slice(0, 1000) : null,
             ]);
@@ -62,15 +70,18 @@ export class ObservabilityRecorder {
     }
     /**
      * Record a sub-call event (pg_search, llm_query from REPL, etc.).
+     *
+     * Snapshots `this.sessionId` synchronously (see recordLLMCall).
      */
     recordSubCall(iteration, requestType, promptPreview, durationMs, isError, errorMessage) {
+        const capturedSessionId = this.sessionId;
         this.fire(async () => {
             const client = this.storage.getClient();
-            if (!client || !this.sessionId)
+            if (!client || !capturedSessionId)
                 return;
             await client.query(`INSERT INTO rlmx_events (session_id, iteration, kind, request_type, prompt_preview, duration_ms, is_error, error_message)
          VALUES ($1, $2, 'sub_call', $3, $4, $5, $6, $7)`, [
-                this.sessionId, iteration,
+                capturedSessionId, iteration,
                 requestType, promptPreview.slice(0, 500),
                 durationMs, isError ?? false, errorMessage?.slice(0, 1000) ?? null,
             ]);
@@ -78,11 +89,19 @@ export class ObservabilityRecorder {
     }
     /**
      * Record session completion with final answer and totals.
+     *
+     * Snapshots `this.sessionId` synchronously so the UPDATE targets the
+     * right row even if another `startSession()` has fired before the
+     * queued callback executes. Without this snapshot, running multiple
+     * agents in sequence caused every recordFinal to UPDATE the most
+     * recently-started session, leaving all earlier sessions stuck in
+     * status='running'.
      */
     recordFinal(answer, iterations, totalUsage) {
+        const capturedSessionId = this.sessionId;
         this.fire(async () => {
             const client = this.storage.getClient();
-            if (!client || !this.sessionId)
+            if (!client || !capturedSessionId)
                 return;
             await client.query(`UPDATE rlmx_sessions SET
            status = 'completed',
@@ -94,7 +113,7 @@ export class ObservabilityRecorder {
            total_cost = $6,
            answer_length = $7
          WHERE id = $1`, [
-                this.sessionId, iterations,
+                capturedSessionId, iterations,
                 totalUsage.inputTokens, totalUsage.outputTokens,
                 totalUsage.cachedTokens ?? 0, totalUsage.totalCost,
                 answer.length,
@@ -103,13 +122,16 @@ export class ObservabilityRecorder {
     }
     /**
      * Record session failure.
+     *
+     * Snapshots `this.sessionId` synchronously (see recordFinal).
      */
     recordError(errorMessage) {
+        const capturedSessionId = this.sessionId;
         this.fire(async () => {
             const client = this.storage.getClient();
-            if (!client || !this.sessionId)
+            if (!client || !capturedSessionId)
                 return;
-            await client.query(`UPDATE rlmx_sessions SET status = 'failed', ended_at = now(), budget_hit = $2 WHERE id = $1`, [this.sessionId, errorMessage.slice(0, 500)]);
+            await client.query(`UPDATE rlmx_sessions SET status = 'failed', ended_at = now(), budget_hit = $2 WHERE id = $1`, [capturedSessionId, errorMessage.slice(0, 500)]);
         });
     }
     /**

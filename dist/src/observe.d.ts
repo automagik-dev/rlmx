@@ -36,22 +36,39 @@ export declare class ObservabilityRecorder {
     startSession(runId: string, query: string, model: string, provider: string, contextPath?: string, config?: Record<string, unknown>): void;
     /**
      * Record an LLM call event.
+     *
+     * Snapshots `this.sessionId` synchronously so a subsequent
+     * `startSession()` (for the next run) doesn't hijack the INSERT when
+     * the queued callback eventually executes.
      */
     recordLLMCall(iteration: number, usage: LLMCallUsage, model: string, durationMs: number): void;
     /**
      * Record a REPL execution event.
+     *
+     * Snapshots `this.sessionId` synchronously (see recordLLMCall).
      */
     recordReplExec(iteration: number, code: string, stdout: string, stderr: string, durationMs: number, isError?: boolean): void;
     /**
      * Record a sub-call event (pg_search, llm_query from REPL, etc.).
+     *
+     * Snapshots `this.sessionId` synchronously (see recordLLMCall).
      */
     recordSubCall(iteration: number, requestType: string, promptPreview: string, durationMs: number, isError?: boolean, errorMessage?: string): void;
     /**
      * Record session completion with final answer and totals.
+     *
+     * Snapshots `this.sessionId` synchronously so the UPDATE targets the
+     * right row even if another `startSession()` has fired before the
+     * queued callback executes. Without this snapshot, running multiple
+     * agents in sequence caused every recordFinal to UPDATE the most
+     * recently-started session, leaving all earlier sessions stuck in
+     * status='running'.
      */
     recordFinal(answer: string, iterations: number, totalUsage: TotalUsage): void;
     /**
      * Record session failure.
+     *
+     * Snapshots `this.sessionId` synchronously (see recordFinal).
      */
     recordError(errorMessage: string): void;
     /**
