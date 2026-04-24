@@ -42,13 +42,21 @@ export declare class PgStorage {
      */
     start(config: StorageConfig): Promise<string>;
     /**
-     * Try to attach to an existing pgserve advertised by
-     * `{dataDir}/.rlmx-server.json`. Returns the connection string on success,
-     * null to tell the caller to proceed with a normal spawn. Silent on every
-     * failure path — stale sidecars, dead PIDs, and unreachable servers all
-     * fall back to spawning.
+     * Try to attach to an existing pgserve on this dataDir. Three levels of
+     * discovery, in order:
+     *
+     *   1. `.rlmx-server.json` sidecar (the happy path — spawner writes it
+     *      after `waitForReady`, cleans it on stop).
+     *   2. `postmaster.pid` fallback (postgres's own lockfile — present even
+     *      if the rlmx sidecar was never written or got unlinked before the
+     *      pg process exited, e.g. orphaned pgserve after a crash).
+     *
+     * Returns the connection string on success, null to tell the caller to
+     * proceed with a normal spawn. Silent on every failure path.
      */
     private tryAttachFromSidecar;
+    /** Open a client at the given port; returns true and retains client on success. */
+    private tryConnectAt;
     /** Write the server-info sidecar advertising our pgserve to future callers. */
     private writeSidecar;
     /**
