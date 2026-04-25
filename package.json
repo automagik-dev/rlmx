@@ -1,6 +1,6 @@
 {
   "name": "@automagik/rlmx",
-  "version": "0.260425.1",
+  "version": "0.260425.2",
   "description": "RLM algorithm CLI for coding agents — prompt externalization, Python REPL with symbolic recursion, code-driven navigation",
   "type": "module",
   "publishConfig": {
