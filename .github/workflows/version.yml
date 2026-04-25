@@ -80,9 +80,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Node 24 ships npm 11.5+ which has OIDC trusted-publisher support
+      # built in. Avoids the `npm install -g npm@latest` self-upgrade bug
+      # (Arborist clobbering its own promise-retry dep mid-install) that
+      # broke our 0.260425.1 publish on Node 22 + ubuntu-latest.
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
@@ -147,12 +151,16 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Node 22 bundles npm 10.x; npm Trusted Publishing (automatic OIDC
-      # token exchange) requires npm >= 11.5.1. Without this upgrade,
-      # `npm publish` sends an empty placeholder token and the registry
-      # returns a misleading 404 instead of the real 401/403 auth failure.
-      - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@latest
+      - name: Verify npm version supports OIDC trusted publishing
+        run: |
+          NPM_VERSION=$(npm --version)
+          echo "npm version: ${NPM_VERSION}"
+          # OIDC trusted publishing requires npm >= 11.5.1.
+          MAJOR=$(echo "${NPM_VERSION}" | cut -d. -f1)
+          if [ "${MAJOR}" -lt 11 ]; then
+            echo "::error::npm ${NPM_VERSION} too old — OIDC requires >= 11.5.1. Bump node-version above."
+            exit 1
+          fi
 
       - name: Publish to npm via OIDC
         env:
