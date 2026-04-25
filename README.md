@@ -4,6 +4,39 @@ RLM algorithm CLI for coding agents — prompt externalization, Python REPL with
 
 Based on the [RLM paper](https://arxiv.org/abs/2501.12599) (REPL-based LLM Method). Uses [pi/ai](https://github.com/nickarora/pi-ai) as the multi-provider LLM client.
 
+## Production validation (2026-04-22)
+
+The SDK (`rlmx.sdk.*`) is production-validated via its first consumer,
+`khal-os/brain`, a multi-agent pipeline over WhatsApp / long-form
+archives. Three agent bridges run through `sdk.runAgent()`:
+
+| bridge | role | slate | status |
+|---|---|---|---|
+| L1 triage | worth-processing filter | 30 windows | **SHIP 30/30** structural match vs legacy path |
+| L2 preservation | multi-step extraction + brain mutation | 24 windows | **SHIP at variance ceiling** (baseline×baseline ≈ baseline×bridge) |
+| L3 audit | sampled self-audit | slate in flight | pending verdict |
+
+Evidence depth (metadata only — no content):
+
+- Dogfood reports live in the brain repo under
+  `brain-lab/rlmx-sdk-bridge-report/` (L1) and
+  `brain-lab/rlmx-sdk-bridge-report-l2/` (L2). Each carries a
+  `SHIP-decision.md` with the baseline-vs-bridge delta table + stop-
+  reason distribution.
+- Event streams, permission hooks, validate-with-retry, and session
+  checkpoints are all exercised per-window. Cost and latency are
+  captured per iteration.
+- Brain's bridge pattern (an outer `IterationDriver` wrapping the
+  legacy pi-agent loop) is a reusable template for consumers that
+  want to migrate a working agent into the SDK without rewriting
+  its internals. See `src/agent/rlmx-bridge.ts` in `khal-os/brain`
+  for the reference implementation.
+
+**Stability stamp:** `schema_version: 1` + `tools_api: 1` are the
+fields every bridge has shipped against. See
+[`docs/agent-yaml-schema.md`](docs/agent-yaml-schema.md) for the
+schema itself.
+
 ## Install
 
 ```bash
@@ -28,6 +61,44 @@ rlmx "Summarize this paper" --context paper.md --output json
 # Pipe data in
 cat data.csv | rlmx "Analyze this dataset"
 ```
+
+## SDK (`rlmx.sdk.*`)
+
+rlmx also ships a programmatic SDK for consumers that need to drive
+agents from code — with per-iteration observability, permission
+hooks, validate-with-retry, session checkpointing, and a pluggable
+tool registry. The CLI path above is untouched; the SDK is purely
+additive.
+
+```ts
+import { sdk } from "@automagik/rlmx";
+
+const spec = await sdk.loadAgentSpec("./my-agent");
+const registry = sdk.createToolRegistry();
+await sdk.registerRtkTool(registry);
+await sdk.loadPluginTools(spec, registry);
+
+for await (const ev of sdk.runAgent({
+	agentId: "my-agent",
+	sessionId: "s-1",
+	input: "what's new?",
+	driver: sdk.rlmDriver({
+		model: { provider: "google", model: "gemini-2.5-flash" },
+		system: await Bun.file("./my-agent/SYSTEM.md").text(),
+	}),
+	toolRegistry: registry,
+})) {
+	console.log(ev.type, ev.timestamp);
+}
+```
+
+Deeper dives:
+
+- [`docs/sdk-overview.md`](docs/sdk-overview.md) — layered architecture + design principles.
+- [`docs/events.md`](docs/events.md) — the 12-event catalogue + emitter contract.
+- [`docs/tool-authoring.md`](docs/tool-authoring.md) — TS/MJS + Python plugin recipes, RTK integration.
+- [`docs/agent-yaml-schema.md`](docs/agent-yaml-schema.md) — `agent.yaml` field reference.
+- [`examples/`](examples/) — three runnable example agents (hello-world / research-agent / brain-triage) with smoke tests.
 
 ## RTK Integration (token savings)
 
